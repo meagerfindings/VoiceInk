@@ -38,6 +38,8 @@ My goal is to make it **the most efficient and privacy-focused voice-to-text sol
 - 📝 **Personal Dictionary**: Train the AI to understand your unique terminology with custom words, industry terms, and smart text replacements
 - 🔄 **Smart Modes**: Instantly switch between AI-powered modes optimized for different writing styles and contexts
 - 🤖 **AI Assistant**: Built-in voice assistant mode for a quick chatGPT like conversational assistant
+- 🌐 **API Server**: Built-in HTTP API server for external applications to send audio files for transcription
+- 👥 **Speaker Diarization**: Identify and label different speakers in conversations (experimental)
 
 ## Get Started
 
@@ -57,6 +59,185 @@ As an open-source project, you can build VoiceInk yourself by following the inst
 ## Requirements
 
 - macOS 14.0 or later
+
+## API Server
+
+VoiceInk includes a built-in HTTP API server that allows external applications to send audio files for transcription. This enables integration with other tools and automation workflows while leveraging VoiceInk's powerful transcription capabilities.
+
+### Enabling the API Server
+
+1. Open VoiceInk Settings
+2. Navigate to the API tab
+3. Toggle "Enable API Server"
+4. Configure the port (default: 8080)
+5. Optionally enable "Allow Network Access" for remote connections (default: localhost only)
+
+### API Endpoints
+
+#### Health Check
+```
+GET /health
+```
+
+Returns detailed system and service information:
+```json
+{
+  "status": "healthy",
+  "service": "VoiceInk API",
+  "version": "1.49",
+  "system": {
+    "platform": "macOS",
+    "osVersion": "Version 15.2",
+    "processorCount": 12,
+    "memoryUsageMB": 202.5,
+    "uptimeSeconds": 131.4
+  },
+  "api": {
+    "endpoint": "http://localhost:8080",
+    "port": 8080,
+    "isRunning": true,
+    "requestsServed": 10,
+    "averageProcessingTimeMs": 1250.5
+  },
+  "transcription": {
+    "currentModel": "Large v3 Turbo",
+    "modelLoaded": true,
+    "availableModels": ["ggml-large-v3-turbo-q5_0"],
+    "enhancementEnabled": false,
+    "wordReplacementEnabled": true
+  },
+  "capabilities": [
+    "speech-to-text",
+    "multi-model-support",
+    "ai-enhancement",
+    "word-replacement",
+    "local-transcription",
+    "cloud-transcription"
+  ]
+}
+```
+
+#### Transcribe Audio
+```
+POST /api/transcribe
+```
+
+Transcribe an audio file with optional speaker diarization.
+
+**Request (multipart/form-data):**
+- `file` (required): Audio file (WAV, MP3, M4A, etc.)
+- `enable_diarization` (optional): Enable speaker diarization (true/false, default: false)
+- `diarization_mode` (optional): Diarization optimization mode ("fast", "balanced", "accurate")
+- `min_speakers` (optional): Minimum expected speakers (integer)
+- `max_speakers` (optional): Maximum expected speakers (integer)
+- `use_tinydiarize` (optional): Use whisper.cpp's tinydiarize feature (true/false, requires tdrz models)
+
+**Response without diarization:**
+```json
+{
+  "success": true,
+  "text": "Transcribed text goes here",
+  "enhancedText": "AI-enhanced version if enabled",
+  "metadata": {
+    "model": "Large v3 Turbo",
+    "language": "en",
+    "duration": 5.2,
+    "processingTime": 1.3,
+    "transcriptionTime": 1.1,
+    "enhancementTime": 0.2,
+    "enhanced": true,
+    "replacementsApplied": true
+  }
+}
+```
+
+**Response with diarization:**
+```json
+{
+  "success": true,
+  "text": "Full transcription text",
+  "segments": [
+    {
+      "start": 0.0,
+      "end": 2.5,
+      "text": "Hello, how are you?",
+      "speaker": "SPEAKER_00",
+      "confidence": 0.95
+    },
+    {
+      "start": 2.5,
+      "end": 4.2,
+      "text": "I'm doing well, thanks!",
+      "speaker": "SPEAKER_01",
+      "confidence": 0.92
+    }
+  ],
+  "speakers": ["SPEAKER_00", "SPEAKER_01"],
+  "numSpeakers": 2,
+  "textWithSpeakers": "[SPEAKER_00]:\nHello, how are you?\n\n[SPEAKER_01]:\nI'm doing well, thanks!",
+  "metadata": {
+    "model": "Large v3 Turbo",
+    "language": "en",
+    "duration": 5.2,
+    "processingTime": 2.1,
+    "transcriptionTime": 1.1,
+    "diarizationTime": 0.8,
+    "diarizationEnabled": true,
+    "diarizationMethod": "tinydiarize"
+  }
+}
+```
+
+### Example Usage
+
+#### Basic Transcription
+```bash
+curl -X POST http://localhost:8080/api/transcribe \
+  -F "file=@recording.wav"
+```
+
+#### With Speaker Diarization
+```bash
+curl -X POST http://localhost:8080/api/transcribe \
+  -F "file=@meeting.wav" \
+  -F "enable_diarization=true" \
+  -F "diarization_mode=balanced" \
+  -F "min_speakers=2" \
+  -F "max_speakers=4"
+```
+
+#### Python Example
+```python
+import requests
+
+# Transcribe with diarization
+with open('audio.wav', 'rb') as f:
+    response = requests.post(
+        'http://localhost:8080/api/transcribe',
+        files={'file': f},
+        data={
+            'enable_diarization': 'true',
+            'diarization_mode': 'accurate'
+        }
+    )
+    
+result = response.json()
+if result['success']:
+    print(f"Transcription: {result['text']}")
+    if 'speakers' in result:
+        print(f"Speakers detected: {result['numSpeakers']}")
+        print(f"Text with speakers:\n{result['textWithSpeakers']}")
+```
+
+### Speaker Diarization
+
+VoiceInk supports experimental speaker diarization through multiple methods:
+
+1. **Stereo Channel Separation**: For 2-channel audio where each speaker is on a separate channel
+2. **Tinydiarize**: Using whisper.cpp's experimental tinydiarize feature (requires special tdrz models)
+3. **Future**: Framework in place for pyannote.audio integration
+
+**Note**: Speaker diarization is experimental and accuracy may vary based on audio quality, number of speakers, and the diarization method used.
 
 ## Documentation
 

@@ -5,7 +5,7 @@ import os
 /// Handles API transcription requests using VoiceInk's existing transcription pipeline
 class TranscriptionAPIHandler {
     private let logger = Logger(subsystem: "com.voiceink.api", category: "APIHandler")
-    private let whisperState: WhisperState
+    let whisperState: WhisperState  // Made internal for health check access
     private let audioProcessor = AudioProcessor()
     
     // Transcription services

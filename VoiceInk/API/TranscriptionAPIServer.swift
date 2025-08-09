@@ -15,6 +15,11 @@ class TranscriptionAPIServer: ObservableObject {
     private let handler: TranscriptionAPIHandler
     private let queue = DispatchQueue(label: "com.voiceink.api.server", qos: .userInitiated)
     
+    // Stats tracking
+    private var serverStartTime: Date?
+    private var requestCount: Int = 0
+    private var totalProcessingTime: TimeInterval = 0
+    
     init(whisperState: WhisperState) {
         self.handler = TranscriptionAPIHandler(whisperState: whisperState)
         
@@ -27,6 +32,10 @@ class TranscriptionAPIServer: ObservableObject {
     
     func start() {
         guard !isRunning else { return }
+        
+        serverStartTime = Date()
+        requestCount = 0
+        totalProcessingTime = 0
         
         let parameters = NWParameters.tcp
         parameters.allowLocalEndpointReuse = true
@@ -160,8 +169,15 @@ class TranscriptionAPIServer: ObservableObject {
         }
         
         // Process the transcription
+        let startTime = Date()
         do {
             let result = try await handler.transcribe(audioData: audioData)
+            let processingTime = Date().timeIntervalSince(startTime)
+            
+            // Update stats
+            requestCount += 1
+            totalProcessingTime += processingTime
+            
             sendJSONResponse(connection: connection, data: result)
         } catch {
             logger.error("Transcription failed: \(error.localizedDescription)")
@@ -206,17 +222,94 @@ class TranscriptionAPIServer: ObservableObject {
     }
     
     private func sendHealthResponse(connection: NWConnection) {
-        let response = """
-        HTTP/1.1 200 OK\r
-        Content-Type: application/json\r
-        Access-Control-Allow-Origin: *\r
-        \r
-        {"status":"healthy","service":"VoiceInk API","version":"1.0.0"}
-        """
+        Task {
+            let healthData = await getHealthStatus()
+            let response = """
+            HTTP/1.1 200 OK\r
+            Content-Type: application/json\r
+            Content-Length: \(healthData.count)\r
+            Access-Control-Allow-Origin: *\r
+            \r
+            
+            """
+            
+            var responseData = response.data(using: .utf8) ?? Data()
+            responseData.append(healthData)
+            
+            connection.send(content: responseData, completion: .contentProcessed { _ in
+                connection.cancel()
+            })
+        }
+    }
+    
+    private func getHealthStatus() async -> Data {
+        // Get current model info
+        let currentModel = handler.whisperState.currentTranscriptionModel
+        let modelLoaded = handler.whisperState.isModelLoaded
+        let availableModels = handler.whisperState.availableModels.map { $0.name }
         
-        connection.send(content: response.data(using: .utf8), completion: .contentProcessed { _ in
-            connection.cancel()
-        })
+        // Get system info
+        let processInfo = ProcessInfo.processInfo
+        let memoryUsage = getMemoryUsage()
+        
+        // Get API stats
+        let uptime = Date().timeIntervalSince(serverStartTime ?? Date())
+        
+        let health = HealthResponse(
+            status: "healthy",
+            service: "VoiceInk API",
+            version: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.0",
+            timestamp: Date().timeIntervalSince1970,
+            system: SystemInfo(
+                platform: "macOS",
+                osVersion: processInfo.operatingSystemVersionString,
+                processorCount: processInfo.processorCount,
+                memoryUsageMB: memoryUsage,
+                uptimeSeconds: uptime
+            ),
+            api: APIInfo(
+                endpoint: "http://\(UserDefaults.standard.bool(forKey: "APIServerAllowNetworkAccess") ? "0.0.0.0" : "localhost"):\(port)",
+                port: port,
+                isRunning: isRunning,
+                requestsServed: requestCount,
+                averageProcessingTimeMs: totalProcessingTime > 0 ? (totalProcessingTime / Double(requestCount)) * 1000 : 0
+            ),
+            transcription: TranscriptionInfo(
+                currentModel: currentModel?.displayName,
+                modelLoaded: modelLoaded,
+                availableModels: availableModels,
+                enhancementEnabled: handler.whisperState.enhancementService?.isEnhancementEnabled ?? false,
+                wordReplacementEnabled: UserDefaults.standard.bool(forKey: "IsWordReplacementEnabled")
+            ),
+            capabilities: [
+                "speech-to-text",
+                "multi-model-support",
+                "ai-enhancement",
+                "word-replacement",
+                "local-transcription",
+                "cloud-transcription"
+            ]
+        )
+        
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        return (try? encoder.encode(health)) ?? Data()
+    }
+    
+    private func getMemoryUsage() -> Double {
+        var info = mach_task_basic_info()
+        var count = mach_msg_type_number_t(MemoryLayout<mach_task_basic_info>.size) / 4
+        
+        let result = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: 1) {
+                task_info(mach_task_self_,
+                         task_flavor_t(MACH_TASK_BASIC_INFO),
+                         $0,
+                         &count)
+            }
+        }
+        
+        return result == KERN_SUCCESS ? Double(info.resident_size) / 1024 / 1024 : 0 // Convert to MB
     }
     
     private func sendJSONResponse(connection: NWConnection, data: Data) {

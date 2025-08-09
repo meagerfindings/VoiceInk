@@ -222,6 +222,56 @@ import Foundation
             accuracy: 0.97,
             isMultilingual: true,
             supportedLanguages: getLanguageDictionary(isMultilingual: true, provider: .mistral)
+        ),
+        
+        // Tinydiarize Models for Speaker Diarization
+        LocalModel(
+            name: "ggml-small.en-tdrz",
+            displayName: "Small TDRZ (English)",
+            size: "488 MB",
+            supportedLanguages: getLanguageDictionary(isMultilingual: false, provider: .local),
+            description: "Small model with speaker diarization support (English only)",
+            speed: 0.8,
+            accuracy: 0.85,
+            ramUsage: 0.5,
+            isDiarizationModel: true,
+            supportsDiarization: true
+        ),
+        LocalModel(
+            name: "ggml-small-tdrz",
+            displayName: "Small TDRZ",
+            size: "488 MB",
+            supportedLanguages: getLanguageDictionary(isMultilingual: true, provider: .local),
+            description: "Small multilingual model with speaker diarization support",
+            speed: 0.8,
+            accuracy: 0.83,
+            ramUsage: 0.5,
+            isDiarizationModel: true,
+            supportsDiarization: true
+        ),
+        LocalModel(
+            name: "ggml-medium.en-tdrz",
+            displayName: "Medium TDRZ (English)",
+            size: "1.5 GB",
+            supportedLanguages: getLanguageDictionary(isMultilingual: false, provider: .local),
+            description: "Medium model with speaker diarization support (English only)",
+            speed: 0.6,
+            accuracy: 0.9,
+            ramUsage: 0.7,
+            isDiarizationModel: true,
+            supportsDiarization: true
+        ),
+        LocalModel(
+            name: "ggml-medium-tdrz",
+            displayName: "Medium TDRZ",
+            size: "1.5 GB",
+            supportedLanguages: getLanguageDictionary(isMultilingual: true, provider: .local),
+            description: "Medium multilingual model with speaker diarization support",
+            speed: 0.6,
+            accuracy: 0.88,
+            ramUsage: 0.7,
+            isDiarizationModel: true,
+            supportsDiarization: true
         )
      ]
  

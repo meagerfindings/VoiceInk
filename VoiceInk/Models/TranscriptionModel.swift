@@ -126,9 +126,32 @@ struct LocalModel: TranscriptionModel {
     let accuracy: Double
     let ramUsage: Double
     let provider: ModelProvider = .local
+    let isDiarizationModel: Bool
+    let supportsDiarization: Bool
+
+    init(name: String, displayName: String, size: String, supportedLanguages: [String: String], 
+         description: String, speed: Double, accuracy: Double, ramUsage: Double, 
+         isDiarizationModel: Bool = false, supportsDiarization: Bool = false) {
+        self.name = name
+        self.displayName = displayName
+        self.size = size
+        self.supportedLanguages = supportedLanguages
+        self.description = description
+        self.speed = speed
+        self.accuracy = accuracy
+        self.ramUsage = ramUsage
+        self.isDiarizationModel = isDiarizationModel
+        self.supportsDiarization = supportsDiarization
+    }
 
     var downloadURL: String {
-        "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/\(filename)"
+        if isDiarizationModel {
+            // Tinydiarize models from HuggingFace
+            return "https://huggingface.co/akashmjn/tinydiarize-whisper.cpp/resolve/main/\(filename)"
+        } else {
+            // Regular whisper models
+            return "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/\(filename)"
+        }
     }
 
     var filename: String {

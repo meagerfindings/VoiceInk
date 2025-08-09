@@ -49,7 +49,18 @@ struct LocalModelCardView: View {
     }
     
     private var statusBadge: some View {
-        Group {
+        HStack(spacing: 4) {
+            if model.supportsDiarization {
+                Label("Speaker Diarization", systemImage: "person.2.fill")
+                    .font(.system(size: 11, weight: .medium))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Capsule().fill(Color.purple.opacity(0.2)))
+                    .foregroundColor(.purple)
+                    .labelStyle(.iconOnly)
+                    .help("Supports speaker diarization")
+            }
+            
             if isCurrent {
                 Text("Default")
                     .font(.system(size: 11, weight: .medium))
@@ -106,12 +117,25 @@ struct LocalModelCardView: View {
     }
     
     private var descriptionSection: some View {
-        Text(model.description)
-            .font(.system(size: 11))
-            .foregroundColor(Color(.secondaryLabelColor))
-            .lineLimit(2)
-            .fixedSize(horizontal: false, vertical: true)
-            .padding(.top, 4)
+        VStack(alignment: .leading, spacing: 2) {
+            Text(model.description)
+                .font(.system(size: 11))
+                .foregroundColor(Color(.secondaryLabelColor))
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+            
+            if model.supportsDiarization {
+                HStack(spacing: 4) {
+                    Image(systemName: "person.2.fill")
+                        .font(.system(size: 10))
+                    Text("Supports speaker diarization - identifies different speakers in conversations")
+                        .font(.system(size: 10, weight: .medium))
+                }
+                .foregroundColor(.purple)
+                .padding(.top, 2)
+            }
+        }
+        .padding(.top, 4)
     }
     
     private var progressSection: some View {

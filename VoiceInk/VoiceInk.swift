@@ -16,6 +16,7 @@ struct VoiceInkApp: App {
     @StateObject private var aiService = AIService()
     @StateObject private var enhancementService: AIEnhancementService
     @StateObject private var activeWindowService = ActiveWindowService.shared
+    @StateObject private var apiServer: TranscriptionAPIServer
     @AppStorage("hasCompletedOnboarding") private var hasCompletedOnboarding = false
     
     // Audio cleanup manager for automatic deletion of old audio files
@@ -83,6 +84,9 @@ struct VoiceInkApp: App {
         activeWindowService.configure(with: enhancementService)
         activeWindowService.configureWhisperState(whisperState)
         _activeWindowService = StateObject(wrappedValue: activeWindowService)
+        
+        // Initialize API server
+        _apiServer = StateObject(wrappedValue: TranscriptionAPIServer(whisperState: whisperState))
     }
     
     var body: some Scene {
@@ -104,6 +108,11 @@ struct VoiceInkApp: App {
                         
                         // Start the transcription auto-cleanup service for zero data retention
                         transcriptionAutoCleanupService.startMonitoring(modelContext: container.mainContext)
+                        
+                        // Auto-start API server if enabled
+                        if UserDefaults.standard.bool(forKey: "APIServerAutoStart") {
+                            apiServer.start()
+                        }
                     }
                     .background(WindowAccessor { window in
                         WindowManager.shared.configureWindow(window)
@@ -116,6 +125,9 @@ struct VoiceInkApp: App {
                         
                         // Stop the transcription auto-cleanup service
                         transcriptionAutoCleanupService.stopMonitoring()
+                        
+                        // Stop API server
+                        apiServer.stop()
                     }
             } else {
                 OnboardingView(hasCompletedOnboarding: $hasCompletedOnboarding)

@@ -72,15 +72,28 @@ class NativeAppleTranscriptionService: TranscriptionService {
         let locale = Locale(identifier: appleLocale)
 
         // Check for locale support and asset installation status using proper BCP-47 format
+        #if false // SpeechTranscriber not available yet
         let supportedLocales = await SpeechTranscriber.supportedLocales
         let installedLocales = await SpeechTranscriber.installedLocales
         let isLocaleSupported = supportedLocales.map({ $0.identifier(.bcp47) }).contains(locale.identifier(.bcp47))
         let isLocaleInstalled = installedLocales.map({ $0.identifier(.bcp47) }).contains(locale.identifier(.bcp47))
+        #else
+        let supportedLocales: [Locale] = []
+        let installedLocales: [Locale] = []
+        let isLocaleSupported = false
+        let isLocaleInstalled = false
+        #endif
 
         // Create the detailed log message
+        #if false // SpeechTranscriber not available yet
         let supportedIdentifiers = supportedLocales.map { $0.identifier(.bcp47) }.sorted().joined(separator: ", ")
         let installedIdentifiers = installedLocales.map { $0.identifier(.bcp47) }.sorted().joined(separator: ", ")
         let availableForDownload = Set(supportedLocales).subtracting(Set(installedLocales)).map { $0.identifier(.bcp47) }.sorted().joined(separator: ", ")
+        #else
+        let supportedIdentifiers = ""
+        let installedIdentifiers = ""
+        let availableForDownload = ""
+        #endif
         
         var statusMessage: String
         if isLocaleInstalled {
@@ -109,9 +122,12 @@ class NativeAppleTranscriptionService: TranscriptionService {
             throw ServiceError.localeNotSupported
         }
         
+        #if false // SpeechTranscriber/SpeechAnalyzer not available yet
         // Properly manage asset allocation/deallocation
+        #if false // These methods are also not available
         try await deallocateExistingAssets()
         try await allocateAssetsForLocale(locale)
+        #endif
         
         let transcriber = SpeechTranscriber(
             locale: locale,
@@ -140,8 +156,13 @@ class NativeAppleTranscriptionService: TranscriptionService {
         
         logger.notice("Native transcription successful. Length: \(finalTranscription.count) characters.")
         return finalTranscription
+        #else
+        // For now, throw an error as this API is not yet available
+        throw CloudTranscriptionError.unsupportedProvider
+        #endif
     }
     
+    #if false // AssetInventory not available yet
     @available(macOS 26, *)
     private func deallocateExistingAssets() async throws {
         #if canImport(Speech)
@@ -165,7 +186,9 @@ class NativeAppleTranscriptionService: TranscriptionService {
         }
         #endif
     }
+    #endif // false - AssetInventory
     
+    #if false // SpeechTranscriber is not available yet in current macOS
     @available(macOS 26, *)
     private func ensureModelIsAvailable(for transcriber: SpeechTranscriber, locale: Locale) async throws {
         #if canImport(Speech)
@@ -185,4 +208,5 @@ class NativeAppleTranscriptionService: TranscriptionService {
         }
         #endif
     }
+    #endif // false - SpeechTranscriber
 } 

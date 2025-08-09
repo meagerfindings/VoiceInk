@@ -267,6 +267,16 @@ struct SettingsView: View {
                     }
                 }
 
+                // API Server Section
+                SettingsSection(
+                    icon: "network",
+                    title: "API Server",
+                    subtitle: "Enable external applications to use VoiceInk's transcription"
+                ) {
+                    APISettingsView(whisperState: whisperState)
+                        .frame(maxWidth: .infinity)
+                }
+
                 // Data Management Section
                 SettingsSection(
                     icon: "arrow.up.arrow.down.circle",

@@ -168,10 +168,13 @@ class TranscriptionAPIServer: ObservableObject {
             return
         }
         
+        // Extract diarization parameters from form data
+        let diarizationParams = extractDiarizationParams(from: body, boundary: boundary)
+        
         // Process the transcription
         let startTime = Date()
         do {
-            let result = try await handler.transcribe(audioData: audioData)
+            let result = try await handler.transcribe(audioData: audioData, diarizationParams: diarizationParams)
             let processingTime = Date().timeIntervalSince(startTime)
             
             // Update stats
@@ -195,6 +198,61 @@ class TranscriptionAPIServer: ObservableObject {
             }
         }
         return nil
+    }
+    
+    private func extractDiarizationParams(from body: String, boundary: String) -> DiarizationParameters? {
+        // Parse form fields for diarization parameters
+        let parts = body.components(separatedBy: "--\(boundary)")
+        
+        var enableDiarization = false
+        var diarizationMode: DiarizationMode?
+        var minSpeakers: Int?
+        var maxSpeakers: Int?
+        var useTinydiarize = false
+        
+        for part in parts {
+            // Extract field name and value
+            if part.contains("Content-Disposition: form-data") {
+                if let nameRange = part.range(of: "name=\""),
+                   let nameEndRange = part.range(of: "\"", range: nameRange.upperBound..<part.endIndex) {
+                    let fieldName = String(part[nameRange.upperBound..<nameEndRange.lowerBound])
+                    
+                    // Extract value (after double newline)
+                    if let valueRange = part.range(of: "\r\n\r\n") {
+                        let valueStart = part.index(valueRange.upperBound, offsetBy: 0)
+                        let valueEnd = part.range(of: "\r\n", range: valueStart..<part.endIndex)?.lowerBound ?? part.endIndex
+                        let value = String(part[valueStart..<valueEnd]).trimmingCharacters(in: .whitespacesAndNewlines)
+                        
+                        // Parse based on field name
+                        switch fieldName {
+                        case "enable_diarization":
+                            enableDiarization = value.lowercased() == "true" || value == "1"
+                        case "diarization_mode":
+                            diarizationMode = DiarizationMode(rawValue: value)
+                        case "min_speakers":
+                            minSpeakers = Int(value)
+                        case "max_speakers":
+                            maxSpeakers = Int(value)
+                        case "use_tinydiarize":
+                            useTinydiarize = value.lowercased() == "true" || value == "1"
+                        default:
+                            break
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Return nil if diarization is not enabled
+        guard enableDiarization else { return nil }
+        
+        return DiarizationParameters(
+            enableDiarization: enableDiarization,
+            diarizationMode: diarizationMode,
+            minSpeakers: minSpeakers,
+            maxSpeakers: maxSpeakers,
+            useTinydiarize: useTinydiarize
+        )
     }
     
     private func extractAudioData(from body: String, boundary: String) -> Data? {

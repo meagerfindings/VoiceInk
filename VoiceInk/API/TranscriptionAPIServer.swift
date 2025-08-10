@@ -99,8 +99,8 @@ class TranscriptionAPIServer: ObservableObject {
     private func handleNewConnection(_ connection: NWConnection) {
         connection.start(queue: queue)
         
-        // Read the HTTP request
-        connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, error in
+        // Read the HTTP request with larger buffer for audio files
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 10485760) { [weak self] data, _, isComplete, error in
             guard let self = self,
                   let data = data,
                   !data.isEmpty else {
@@ -115,13 +115,22 @@ class TranscriptionAPIServer: ObservableObject {
     }
     
     private func processRequest(data: Data, connection: NWConnection) async {
-        guard let request = String(data: data, encoding: .utf8) else {
+        // Find the header/body separator
+        let separator = "\r\n\r\n".data(using: .utf8)!
+        guard let separatorRange = data.range(of: separator) else {
             sendErrorResponse(connection: connection, statusCode: 400, message: "Invalid request")
             return
         }
         
-        // Parse HTTP request
-        let lines = request.components(separatedBy: "\r\n")
+        // Parse headers as UTF-8
+        let headerData = data.subdata(in: 0..<separatorRange.lowerBound)
+        guard let headers = String(data: headerData, encoding: .utf8) else {
+            sendErrorResponse(connection: connection, statusCode: 400, message: "Invalid request headers")
+            return
+        }
+        
+        // Parse HTTP request line
+        let lines = headers.components(separatedBy: "\r\n")
         guard let firstLine = lines.first else {
             sendErrorResponse(connection: connection, statusCode: 400, message: "Invalid request")
             return
@@ -136,9 +145,13 @@ class TranscriptionAPIServer: ObservableObject {
         let method = parts[0]
         let path = parts[1]
         
+        // Extract body data (raw, not converted to string)
+        let bodyStart = separatorRange.upperBound
+        let bodyData = data.subdata(in: bodyStart..<data.count)
+        
         // Route the request
         if method == "POST" && path == "/api/transcribe" {
-            await handleTranscribeRequest(request: request, connection: connection)
+            await handleTranscribeRequest(headers: headers, bodyData: bodyData, connection: connection)
         } else if method == "GET" && path == "/health" {
             sendHealthResponse(connection: connection)
         } else {
@@ -146,24 +159,15 @@ class TranscriptionAPIServer: ObservableObject {
         }
     }
     
-    private func handleTranscribeRequest(request: String, connection: NWConnection) async {
+    private func handleTranscribeRequest(headers: String, bodyData: Data, connection: NWConnection) async {
         // Extract the multipart boundary
-        guard let boundary = extractBoundary(from: request) else {
+        guard let boundary = extractBoundary(from: headers) else {
             sendErrorResponse(connection: connection, statusCode: 400, message: "Missing multipart boundary")
             return
         }
         
-        // Find where the body starts (after the empty line)
-        guard let bodyRange = request.range(of: "\r\n\r\n") else {
-            sendErrorResponse(connection: connection, statusCode: 400, message: "Invalid request format")
-            return
-        }
-        
-        let bodyStart = request.index(bodyRange.upperBound, offsetBy: 0)
-        let body = String(request[bodyStart...])
-        
-        // Parse multipart data
-        guard let audioData = extractAudioData(from: body, boundary: boundary) else {
+        // Parse multipart data from raw body
+        guard let audioData = extractAudioDataFromRaw(bodyData: bodyData, boundary: boundary) else {
             sendErrorResponse(connection: connection, statusCode: 400, message: "No audio file found")
             return
         }
@@ -185,8 +189,8 @@ class TranscriptionAPIServer: ObservableObject {
         }
     }
     
-    private func extractBoundary(from request: String) -> String? {
-        for line in request.components(separatedBy: "\r\n") {
+    private func extractBoundary(from headers: String) -> String? {
+        for line in headers.components(separatedBy: "\r\n") {
             if line.lowercased().contains("content-type:") && line.contains("boundary=") {
                 let parts = line.components(separatedBy: "boundary=")
                 if parts.count >= 2 {
@@ -218,6 +222,64 @@ class TranscriptionAPIServer: ObservableObject {
                 }
             }
         }
+        return nil
+    }
+    
+    private func extractAudioDataFromRaw(bodyData: Data, boundary: String) -> Data? {
+        // Parse multipart data without converting to string
+        let boundaryData = "--\(boundary)".data(using: .utf8)!
+        let headerSeparator = "\r\n\r\n".data(using: .utf8)!
+        let endBoundary = "--\(boundary)--".data(using: .utf8)!
+        
+        // Split by boundary
+        var currentIndex = 0
+        while currentIndex < bodyData.count {
+            // Find next boundary
+            guard let boundaryRange = bodyData.range(of: boundaryData, in: currentIndex..<bodyData.count) else {
+                break
+            }
+            
+            // Find header separator after boundary
+            let partStart = boundaryRange.upperBound
+            guard let headerEndRange = bodyData.range(of: headerSeparator, in: partStart..<bodyData.count) else {
+                currentIndex = partStart
+                continue
+            }
+            
+            // Extract headers
+            let headerData = bodyData.subdata(in: partStart..<headerEndRange.lowerBound)
+            guard let headers = String(data: headerData, encoding: .utf8) else {
+                currentIndex = headerEndRange.upperBound
+                continue
+            }
+            
+            // Check if this is the file field
+            if headers.contains("Content-Disposition: form-data") && headers.contains("name=\"file\"") {
+                // Find the end of this part
+                let dataStart = headerEndRange.upperBound
+                
+                // Look for next boundary or end boundary
+                var dataEnd = bodyData.count
+                if let nextBoundaryRange = bodyData.range(of: boundaryData, in: dataStart..<bodyData.count) {
+                    // Back up to remove the \r\n before boundary
+                    dataEnd = nextBoundaryRange.lowerBound
+                    if dataEnd >= 2 {
+                        dataEnd -= 2  // Remove \r\n
+                    }
+                } else if let endRange = bodyData.range(of: endBoundary, in: dataStart..<bodyData.count) {
+                    dataEnd = endRange.lowerBound
+                    if dataEnd >= 2 {
+                        dataEnd -= 2  // Remove \r\n
+                    }
+                }
+                
+                // Extract audio data
+                return bodyData.subdata(in: dataStart..<dataEnd)
+            }
+            
+            currentIndex = headerEndRange.upperBound
+        }
+        
         return nil
     }
     

@@ -169,7 +169,8 @@ class TranscriptionAPIServer: ObservableObject {
         }
         
         // Extract diarization parameters from form data
-        let diarizationParams = extractDiarizationParams(from: body, boundary: boundary)
+        let bodyString = String(data: bodyData, encoding: .utf8) ?? ""
+        let diarizationParams = extractDiarizationParams(from: bodyString, boundary: boundary)
         
         // Process the transcription
         let startTime = Date()

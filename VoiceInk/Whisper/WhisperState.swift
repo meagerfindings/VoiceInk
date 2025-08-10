@@ -21,6 +21,7 @@ class WhisperState: NSObject, ObservableObject {
     @Published var isModelLoaded = false
     @Published var loadedLocalModel: WhisperModel?
     @Published var currentTranscriptionModel: (any TranscriptionModel)?
+    @Published var apiDiarizationModel: (any TranscriptionModel)?
     @Published var isModelLoading = false
     @Published var availableModels: [WhisperModel] = []
     @Published var allAvailableModels: [any TranscriptionModel] = PredefinedModels.models

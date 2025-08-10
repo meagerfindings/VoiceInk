@@ -2,6 +2,7 @@ import SwiftUI
 
 struct APISettingsView: View {
     @StateObject private var apiServer: TranscriptionAPIServer
+    @ObservedObject var whisperState: WhisperState
     @State private var port: String = ""
     @State private var apiToken: String = ""
     @State private var allowNetworkAccess = false
@@ -9,6 +10,7 @@ struct APISettingsView: View {
     @State private var showingTestInstructions = false
     
     init(whisperState: WhisperState) {
+        self.whisperState = whisperState
         _apiServer = StateObject(wrappedValue: TranscriptionAPIServer(whisperState: whisperState))
     }
     
@@ -91,6 +93,78 @@ struct APISettingsView: View {
                 Text("Configuration")
             } footer: {
                 Text("Configure the API server settings. Changes require restarting the server.")
+                    .font(.caption)
+            }
+            
+            Section {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Diarization Model")
+                        .font(.headline)
+                    
+                    if let currentDiarizationModel = whisperState.apiDiarizationModel {
+                        HStack {
+                            Image(systemName: "checkmark.circle.fill")
+                                .foregroundColor(.green)
+                            Text(currentDiarizationModel.displayName)
+                                .fontWeight(.medium)
+                            Spacer()
+                            Button("Change") {
+                                // This could open a model selector sheet
+                                // For now, we'll just clear it
+                                whisperState.apiDiarizationModel = nil
+                                UserDefaults.standard.removeObject(forKey: "APIDiarizationModel")
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                        }
+                        
+                        if currentDiarizationModel.name.contains("tdrz") || currentDiarizationModel.name.contains("TDRZ") {
+                            Label("Supports Tinydiarize speaker detection", systemImage: "person.2.fill")
+                                .font(.caption)
+                                .foregroundColor(.purple)
+                        }
+                    } else {
+                        Text("No diarization model selected")
+                            .foregroundColor(.secondary)
+                        
+                        // Show available TDRZ models
+                        let tdrzModels = whisperState.allAvailableModels
+                            .compactMap { $0 as? LocalModel }
+                            .filter { $0.supportsDiarization }
+                            .filter { whisperState.availableModels.contains { model in model.name == $0.name } }
+                        
+                        if !tdrzModels.isEmpty {
+                            Text("Available TDRZ Models:")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                                .padding(.top, 4)
+                            
+                            ForEach(tdrzModels, id: \.id) { model in
+                                Button(action: {
+                                    whisperState.setAPIDiarizationModel(model)
+                                }) {
+                                    HStack {
+                                        Text(model.displayName)
+                                            .font(.system(size: 12))
+                                        Spacer()
+                                        Text("Set for Diarization")
+                                            .font(.system(size: 11))
+                                    }
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                            }
+                        } else {
+                            Text("Download a TDRZ model (e.g., Small TDRZ) from the Models page to enable speaker diarization")
+                                .font(.caption)
+                                .foregroundColor(.orange)
+                        }
+                    }
+                }
+            } header: {
+                Text("API Diarization Settings")
+            } footer: {
+                Text("When diarization is requested via API, this model will be used instead of the default transcription model. TDRZ models provide speaker turn detection.")
                     .font(.caption)
             }
             

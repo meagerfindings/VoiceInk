@@ -34,10 +34,24 @@ class TranscriptionAPIHandler {
             try? FileManager.default.removeItem(at: tempURL)
         }
         
-        // Get current model
-        guard let currentModel = await whisperState.currentTranscriptionModel else {
+        // Get current model - use diarization model if diarization is requested and available
+        var currentModel: (any TranscriptionModel)?
+        
+        if diarizationParams?.enableDiarization == true,
+           let diarizationModel = await whisperState.apiDiarizationModel {
+            // Use the dedicated diarization model for API diarization requests
+            currentModel = diarizationModel
+            logger.info("Using API diarization model: \(diarizationModel.name)")
+        } else {
+            currentModel = await whisperState.currentTranscriptionModel
+        }
+        
+        guard let modelToUse = currentModel else {
             throw APIError.noModelSelected
         }
+        
+        // Use modelToUse instead of currentModel from here on
+        let currentModel = modelToUse
         
         // Initialize services if needed
         if localTranscriptionService == nil {
@@ -211,6 +225,13 @@ class TranscriptionAPIHandler {
         
         // Create a temporary whisper context for detailed transcription
         let modelURL = whisperState.modelsDirectory.appendingPathComponent(localModel.filename)
+        
+        // Check if the file exists, log for debugging
+        if !FileManager.default.fileExists(atPath: modelURL.path) {
+            logger.warning("Model file not found at: \(modelURL.path)")
+            throw APIError.transcriptionFailed("Model file not found: \(localModel.filename)")
+        }
+        
         let whisperContext = try await WhisperContext.createContext(path: modelURL.path)
         
         // Read audio samples

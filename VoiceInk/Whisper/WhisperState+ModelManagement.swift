@@ -9,6 +9,12 @@ extension WhisperState {
            let savedModel = allAvailableModels.first(where: { $0.name == savedModelName }) {
             currentTranscriptionModel = savedModel
         }
+        
+        // Also load API diarization model
+        if let savedDiarizationModelName = UserDefaults.standard.string(forKey: "APIDiarizationModel"),
+           let savedDiarizationModel = allAvailableModels.first(where: { $0.name == savedDiarizationModelName }) {
+            apiDiarizationModel = savedDiarizationModel
+        }
     }
 
     // Function to set any transcription model as default
@@ -27,6 +33,13 @@ extension WhisperState {
         }
         // Post notification about the model change
         NotificationCenter.default.post(name: .didChangeModel, object: nil, userInfo: ["modelName": model.name])
+        NotificationCenter.default.post(name: .AppSettingsDidChange, object: nil)
+    }
+    
+    // Function to set API diarization model
+    func setAPIDiarizationModel(_ model: any TranscriptionModel) {
+        self.apiDiarizationModel = model
+        UserDefaults.standard.set(model.name, forKey: "APIDiarizationModel")
         NotificationCenter.default.post(name: .AppSettingsDidChange, object: nil)
     }
     

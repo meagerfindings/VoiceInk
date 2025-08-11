@@ -273,5 +273,6 @@ struct TestInstructionsView: View {
                 }
             }
         }
+        .frame(width: 700, height: 600)
     }
 }

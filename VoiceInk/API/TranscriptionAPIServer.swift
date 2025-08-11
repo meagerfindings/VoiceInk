@@ -8,7 +8,7 @@ class TranscriptionAPIServer: ObservableObject {
     private let logger = Logger(subsystem: "com.voiceink.api", category: "APIServer")
     
     @Published var isRunning = false
-    @Published var port: Int = 8080
+    @Published var port: Int = 5000
     @Published var lastError: String?
     
     private var listener: NWListener?
@@ -26,7 +26,7 @@ class TranscriptionAPIServer: ObservableObject {
         // Load saved settings
         self.port = UserDefaults.standard.integer(forKey: "APIServerPort")
         if self.port == 0 {
-            self.port = 8080
+            self.port = 5000
         }
     }
     

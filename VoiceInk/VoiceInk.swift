@@ -109,6 +109,12 @@ struct VoiceInkApp: App {
                         // Start the transcription auto-cleanup service for zero data retention
                         transcriptionAutoCleanupService.startMonitoring(modelContext: container.mainContext)
                         
+                        // Set API server auto-start to true by default
+                        if !UserDefaults.standard.bool(forKey: "APIServerAutoStartHasBeenSet") {
+                            UserDefaults.standard.set(true, forKey: "APIServerAutoStart")
+                            UserDefaults.standard.set(true, forKey: "APIServerAutoStartHasBeenSet")
+                        }
+                        
                         // Auto-start API server if enabled
                         if UserDefaults.standard.bool(forKey: "APIServerAutoStart") {
                             apiServer.start()

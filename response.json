@@ -1,0 +1,13 @@
+{
+  "success" : true,
+  "text" : "Hello, this is",
+  "metadata" : {
+    "transcriptionTime" : 1.4748320579528809,
+    "duration" : 1,
+    "model" : "Parakeet",
+    "language" : "en",
+    "processingTime" : 1.512752890586853,
+    "enhanced" : false,
+    "replacementsApplied" : true
+  }
+}

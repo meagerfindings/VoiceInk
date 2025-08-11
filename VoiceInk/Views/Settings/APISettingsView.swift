@@ -48,7 +48,7 @@ struct APISettingsView: View {
             Section {
                 HStack {
                     Text("Port:")
-                    TextField("8080", text: $port)
+                    TextField("5000", text: $port)
                         .textFieldStyle(.roundedBorder)
                         .frame(width: 80)
                         .onChange(of: port) { newValue in
@@ -140,7 +140,7 @@ struct APISettingsView: View {
     private func loadSettings() {
         port = String(UserDefaults.standard.integer(forKey: "APIServerPort"))
         if port == "0" || port.isEmpty {
-            port = "8080"
+            port = "5000"
         }
         
         allowNetworkAccess = UserDefaults.standard.bool(forKey: "APIServerAllowNetworkAccess")

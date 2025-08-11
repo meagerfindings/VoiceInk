@@ -2,16 +2,28 @@ import SwiftUI
 import AVFoundation
 import Cocoa
 import KeyboardShortcuts
+import Combine
 
+@MainActor
 class PermissionManager: ObservableObject {
     @Published var audioPermissionStatus = AVCaptureDevice.authorizationStatus(for: .audio)
     @Published var isAccessibilityEnabled = false
     @Published var isScreenRecordingEnabled = false
     @Published var isKeyboardShortcutSet = false
     
+    let screenRecordingHelper = ScreenRecordingHelper()
+    private var cancellables = Set<AnyCancellable>()
+    
     init() {
         // Start observing system events that might indicate permission changes
         setupNotificationObservers()
+        
+        // Observe screen recording permission changes
+        screenRecordingHelper.$hasPermission
+            .sink { [weak self] hasPermission in
+                self?.isScreenRecordingEnabled = hasPermission
+            }
+            .store(in: &cancellables)
         
         // Initial permission checks
         checkAllPermissions()
@@ -52,13 +64,15 @@ class PermissionManager: ObservableObject {
     }
     
     func checkScreenRecordingPermission() {
-        DispatchQueue.main.async {
-            self.isScreenRecordingEnabled = CGPreflightScreenCaptureAccess()
-        }
+        screenRecordingHelper.checkPermission()
     }
     
     func requestScreenRecordingPermission() {
-        CGRequestScreenCaptureAccess()
+        screenRecordingHelper.requestPermission()
+    }
+    
+    func resetScreenRecordingPermission() {
+        screenRecordingHelper.resetPermissionCheck()
     }
     
     func checkAudioPermissionStatus() {
@@ -271,21 +285,42 @@ struct PermissionsView: View {
                     )
                     
                     // Screen Recording Permission
-                    PermissionCard(
-                        icon: "rectangle.on.rectangle",
-                        title: "Screen Recording Access",
-                        description: "Allow VoiceInk to understand context from your screen for transcript Enhancement",
-                        isGranted: permissionManager.isScreenRecordingEnabled,
-                        buttonTitle: "Request Permission",
-                        buttonAction: {
-                            permissionManager.requestScreenRecordingPermission()
-                            // After requesting, open system preferences as fallback
-                            if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") {
-                                NSWorkspace.shared.open(url)
+                    VStack(alignment: .leading, spacing: 8) {
+                        PermissionCard(
+                            icon: "rectangle.on.rectangle",
+                            title: "Screen Recording Access",
+                            description: "Allow VoiceInk to understand context from your screen for transcript Enhancement",
+                            isGranted: permissionManager.isScreenRecordingEnabled,
+                            buttonTitle: "Request Permission",
+                            buttonAction: {
+                                permissionManager.requestScreenRecordingPermission()
+                            },
+                            checkPermission: { permissionManager.checkScreenRecordingPermission() }
+                        )
+                        
+                        // Add troubleshooting button if permission not granted
+                        if !permissionManager.isScreenRecordingEnabled {
+                            HStack {
+                                Button("Open System Settings") {
+                                    permissionManager.screenRecordingHelper.openSystemSettings()
+                                }
+                                .buttonStyle(.link)
+                                .font(.caption)
+                                
+                                Button("Reset Check") {
+                                    permissionManager.resetScreenRecordingPermission()
+                                }
+                                .buttonStyle(.link)
+                                .font(.caption)
                             }
-                        },
-                        checkPermission: { permissionManager.checkScreenRecordingPermission() }
-                    )
+                            .padding(.leading, 40)
+                            
+                            Text("If permission still doesn't work: 1) Toggle VoiceInk OFF then ON in System Settings > Privacy & Security > Screen Recording, 2) Restart VoiceInk")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                                .padding(.leading, 40)
+                        }
+                    }
                 }
             }
             .padding(24)

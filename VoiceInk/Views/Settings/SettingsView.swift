@@ -254,7 +254,7 @@ struct SettingsView: View {
                     title: "API Server",
                     subtitle: "Enable external applications to use VoiceInk's transcription"
                 ) {
-                    APISettingsView(whisperState: whisperState)
+                    APISettingsView()
                         .frame(maxWidth: .infinity)
                 }
 

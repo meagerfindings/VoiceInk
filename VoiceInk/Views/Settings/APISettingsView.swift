@@ -1,16 +1,12 @@
 import SwiftUI
 
 struct APISettingsView: View {
-    @StateObject private var apiServer: TranscriptionAPIServer
+    @EnvironmentObject private var apiServer: TranscriptionAPIServer
     @State private var port: String = ""
     @State private var apiToken: String = ""
     @State private var allowNetworkAccess = false
     @State private var autoStartAPI = false
     @State private var showingTestInstructions = false
-    
-    init(whisperState: WhisperState) {
-        _apiServer = StateObject(wrappedValue: TranscriptionAPIServer(whisperState: whisperState))
-    }
     
     var body: some View {
         Form {
@@ -62,7 +58,16 @@ struct APISettingsView: View {
                 }
                 
                 Toggle("Allow Network Access", isOn: $allowNetworkAccess)
-                    .disabled(apiServer.isRunning)
+                    .onChange(of: allowNetworkAccess) { newValue in
+                        UserDefaults.standard.set(newValue, forKey: "APIServerAllowNetworkAccess")
+                        if apiServer.isRunning {
+                            // Restart server with new settings
+                            apiServer.stop()
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                                apiServer.start()
+                            }
+                        }
+                    }
                 
                 if allowNetworkAccess {
                     Text("When enabled, the API will be accessible from other devices on your network. Otherwise, it's only accessible from localhost.")

@@ -99,6 +99,7 @@ struct VoiceInkApp: App {
                     .environmentObject(menuBarManager)
                     .environmentObject(aiService)
                     .environmentObject(enhancementService)
+                    .environmentObject(apiServer)
                     .modelContainer(container)
                     .onAppear {
                         updaterViewModel.silentlyCheckForUpdates()
@@ -141,6 +142,7 @@ struct VoiceInkApp: App {
                     .environmentObject(whisperState)
                     .environmentObject(aiService)
                     .environmentObject(enhancementService)
+                    .environmentObject(apiServer)
                     .frame(minWidth: 880, minHeight: 780)
                     .background(WindowAccessor { window in
                         // Ensure this is called only once or is idempotent

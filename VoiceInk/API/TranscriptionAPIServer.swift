@@ -374,6 +374,11 @@ class TranscriptionAPIServer: ObservableObject {
             
             // Check if this is the file field
             if headers.contains("Content-Disposition: form-data") && headers.contains("name=\"file\"") {
+                // Log content type if present for debugging
+                if let contentType = AudioFormatDetector.extractContentType(from: headers) {
+                    logger.info("File content-type: \(contentType)")
+                }
+                
                 // Find the end of this part
                 let dataStart = headerEndRange.upperBound
                 

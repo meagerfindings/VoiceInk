@@ -36,10 +36,14 @@ class TranscriptionAPIHandler {
             return try encoder.encode(errorResponse)
         }
         
-        // Save audio data to temporary file
+        // Detect audio format from data
+        let audioFormat = AudioFormatDetector.detectFormat(from: audioData)
+        logger.info("Detected audio format: \(audioFormat.rawValue)")
+        
+        // Save audio data to temporary file with correct extension
         let tempURL = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString)
-            .appendingPathExtension("wav")
+            .appendingPathExtension(audioFormat.rawValue)
         
         try audioData.write(to: tempURL)
         

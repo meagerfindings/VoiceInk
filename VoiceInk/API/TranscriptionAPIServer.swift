@@ -37,6 +37,11 @@ class TranscriptionAPIServer: ObservableObject {
         requestCount = 0
         totalProcessingTime = 0
         
+        // Ensure a model is loaded or selected
+        Task { @MainActor in
+            await ensureModelIsReady()
+        }
+        
         let parameters = NWParameters.tcp
         parameters.allowLocalEndpointReuse = true
         
@@ -76,6 +81,120 @@ class TranscriptionAPIServer: ObservableObject {
         listener = nil
         isRunning = false
         logger.info("API server stopped")
+    }
+    
+    private func ensureModelIsReady() async {
+        let whisperState = handler.whisperState
+        
+        // First, try to load the saved model preference
+        whisperState.loadCurrentTranscriptionModel()
+        
+        // Check if a model is already selected
+        if whisperState.currentTranscriptionModel != nil {
+            logger.info("Model already selected: \(whisperState.currentTranscriptionModel?.displayName ?? "Unknown")")
+            
+            // If it's a local model and not loaded, try to load it
+            if let model = whisperState.currentTranscriptionModel,
+               model.provider == .local,
+               !whisperState.isModelLoaded {
+                
+                // Ensure available models are loaded
+                whisperState.loadAvailableModels()
+                
+                if let localModel = whisperState.availableModels.first(where: { $0.name == model.name }) {
+                    do {
+                        logger.info("Loading local model: \(model.displayName)")
+                        try await whisperState.loadModel(localModel)
+                        logger.info("Model loaded successfully")
+                    } catch {
+                        logger.error("Failed to load model: \(error.localizedDescription)")
+                    }
+                }
+            }
+            return
+        }
+        
+        // No model selected, try to select a default one
+        logger.info("No model selected, attempting to select default model")
+        
+        // First, check if there's a previously selected model in UserDefaults
+        if let savedModelName = UserDefaults.standard.string(forKey: "CurrentTranscriptionModel") {
+            
+            // Load available models first
+            whisperState.loadAvailableModels()
+            
+            // Check if it's a local model
+            if let model = whisperState.availableModels.first(where: { $0.name == savedModelName }) {
+                // Create a LocalModel instance
+                let transcriptionModel = LocalModel(
+                    name: model.name,
+                    displayName: model.name.replacingOccurrences(of: "ggml-", with: ""),
+                    size: "Unknown",
+                    supportedLanguages: [:],
+                    description: "Local Whisper model",
+                    speed: 1.0,
+                    accuracy: 1.0,
+                    ramUsage: 0.0
+                )
+                whisperState.currentTranscriptionModel = transcriptionModel
+                
+                // Try to load the model
+                do {
+                    logger.info("Loading saved local model: \(model.name)")
+                    try await whisperState.loadModel(model)
+                    logger.info("Model loaded successfully")
+                } catch {
+                    logger.error("Failed to load saved model: \(error.localizedDescription)")
+                }
+                return
+            } else {
+                // It might be a cloud model - check in the predefined models
+                if let cloudModel = whisperState.allAvailableModels.first(where: { $0.name == savedModelName }) {
+                    whisperState.currentTranscriptionModel = cloudModel
+                    logger.info("Selected saved model: \(savedModelName)")
+                    return
+                }
+            }
+        }
+        
+        // If no saved model or loading failed, try to select a default
+        // Check for available local models
+        whisperState.loadAvailableModels()
+        if let firstModel = whisperState.availableModels.first {
+            let transcriptionModel = LocalModel(
+                name: firstModel.name,
+                displayName: firstModel.name.replacingOccurrences(of: "ggml-", with: ""),
+                size: "Unknown",
+                supportedLanguages: [:],
+                description: "Local Whisper model",
+                speed: 1.0,
+                accuracy: 1.0,
+                ramUsage: 0.0
+            )
+            whisperState.currentTranscriptionModel = transcriptionModel
+            
+            do {
+                logger.info("Loading default local model: \(firstModel.name)")
+                try await whisperState.loadModel(firstModel)
+                logger.info("Model loaded successfully")
+            } catch {
+                logger.error("Failed to load default model: \(error.localizedDescription)")
+            }
+        } else {
+            // Fall back to cloud model if no local models available
+            let defaultModel = CloudModel(
+                name: "whisper-1",
+                displayName: "Whisper",
+                description: "OpenAI Whisper API",
+                provider: .groq,  // Using Groq as default since OpenAI isn't in the enum
+                speed: 1.0,
+                accuracy: 1.0,
+                isMultilingual: true,
+                supportedLanguages: [:]
+            )
+            whisperState.currentTranscriptionModel = defaultModel
+            logger.info("Selected default cloud model: whisper-1")
+        }
     }
     
     private func handleStateUpdate(_ state: NWListener.State) {

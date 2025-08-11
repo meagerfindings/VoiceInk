@@ -21,6 +21,21 @@ class TranscriptionAPIHandler {
     func transcribe(audioData: Data) async throws -> Data {
         let startTime = Date()
         
+        // Check if a model is loaded first
+        guard await whisperState.currentTranscriptionModel != nil else {
+            logger.error("No transcription model is currently selected or loaded")
+            let errorResponse = TranscriptionErrorResponse(
+                success: false,
+                error: ErrorDetails(
+                    code: "NO_MODEL",
+                    message: "No transcription model is currently loaded. Please load a model in VoiceInk before using the API."
+                )
+            )
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = .prettyPrinted
+            return try encoder.encode(errorResponse)
+        }
+        
         // Save audio data to temporary file
         let tempURL = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString)
@@ -39,14 +54,27 @@ class TranscriptionAPIHandler {
         }
         
         // Initialize services if needed
-        if localTranscriptionService == nil {
+        if localTranscriptionService == nil && currentModel.provider == .local {
             localTranscriptionService = await LocalTranscriptionService(
                 modelsDirectory: whisperState.modelsDirectory,
                 whisperState: whisperState
             )
+            
+            // Check if model needs to be loaded
+            if await !whisperState.isModelLoaded {
+                logger.warning("Local model not loaded, attempting to load now")
+                if let whisperModel = await whisperState.availableModels.first(where: { $0.name == currentModel.name }) {
+                    do {
+                        try await whisperState.loadModel(whisperModel)
+                    } catch {
+                        logger.error("Failed to load model during transcription: \(error.localizedDescription)")
+                        throw APIError.transcriptionFailed("Model failed to load: \(error.localizedDescription)")
+                    }
+                }
+            }
         }
         
-        if parakeetTranscriptionService == nil {
+        if parakeetTranscriptionService == nil && currentModel.provider == .parakeet {
             parakeetTranscriptionService = await ParakeetTranscriptionService(
                 customModelsDirectory: whisperState.parakeetModelsDirectory
             )
@@ -150,6 +178,16 @@ struct TranscriptionMetadata: Codable {
     let enhancementTime: Double?
     let enhanced: Bool
     let replacementsApplied: Bool
+}
+
+struct TranscriptionErrorResponse: Codable {
+    let success: Bool
+    let error: ErrorDetails
+}
+
+struct ErrorDetails: Codable {
+    let code: String
+    let message: String
 }
 
 // MARK: - Errors

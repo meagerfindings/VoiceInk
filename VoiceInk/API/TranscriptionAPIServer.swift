@@ -13,6 +13,7 @@ class TranscriptionAPIServer: ObservableObject {
     
     private var listener: NWListener?
     private let handler: TranscriptionAPIHandler
+    private let largeFileHandler: LargeFileTranscriptionHandler
     private let queue = DispatchQueue(label: "com.voiceink.api.server", qos: .userInitiated)
     
     // Stats tracking
@@ -22,6 +23,7 @@ class TranscriptionAPIServer: ObservableObject {
     
     init(whisperState: WhisperState) {
         self.handler = TranscriptionAPIHandler(whisperState: whisperState)
+        self.largeFileHandler = LargeFileTranscriptionHandler()
         
         // Load saved settings
         self.port = UserDefaults.standard.integer(forKey: "APIServerPort")
@@ -218,8 +220,8 @@ class TranscriptionAPIServer: ObservableObject {
     private func handleNewConnection(_ connection: NWConnection) {
         connection.start(queue: queue)
         
-        // Read the HTTP request with larger buffer for audio files
-        connection.receive(minimumIncompleteLength: 1, maximumLength: 10485760) { [weak self] data, _, isComplete, error in
+        // Peek at the request to determine if it's a large file upload
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 4096) { [weak self] data, _, isComplete, error in
             guard let self = self,
                   let data = data,
                   !data.isEmpty else {
@@ -227,8 +229,49 @@ class TranscriptionAPIServer: ObservableObject {
                 return
             }
             
-            Task {
-                await self.processRequest(data: data, connection: connection)
+            // Check if this looks like a large file upload
+            if let headers = String(data: data, encoding: .utf8) {
+                // Check for Content-Length header
+                var isLargeUpload = false
+                let lines = headers.components(separatedBy: "\r\n")
+                for line in lines {
+                    if line.lowercased().hasPrefix("content-length:") {
+                        let parts = line.components(separatedBy: ":")
+                        if parts.count >= 2,
+                           let contentLength = Int(parts[1].trimmingCharacters(in: .whitespacesAndNewlines)),
+                           contentLength > 10 * 1024 * 1024 { // > 10MB
+                            isLargeUpload = true
+                            self.logger.info("Detected large upload: \(contentLength / 1024 / 1024)MB")
+                            break
+                        }
+                    }
+                }
+                
+                if isLargeUpload {
+                    // Use large file handler for big uploads
+                    Task { @MainActor in
+                        self.largeFileHandler.handleLargeFileConnection(connection, queue: self.queue, handler: self.handler)
+                    }
+                    return
+                }
+            }
+            
+            // For small requests, continue with normal processing
+            // But we need to prepend the data we already read
+            connection.receive(minimumIncompleteLength: 1, maximumLength: 10485760) { [weak self] moreData, _, isComplete, error in
+                guard let self = self else {
+                    connection.cancel()
+                    return
+                }
+                
+                var fullData = data
+                if let moreData = moreData {
+                    fullData.append(moreData)
+                }
+                
+                Task {
+                    await self.processRequest(data: fullData, connection: connection)
+                }
             }
         }
     }

@@ -20,6 +20,8 @@ class TranscriptionAPIHandler {
     
     func transcribe(audioData: Data) async throws -> Data {
         let startTime = Date()
+        let fileSizeMB = Double(audioData.count) / 1024 / 1024
+        logger.info("Starting transcription for \(String(format: "%.1f", fileSizeMB))MB file")
         
         // Check if a model is loaded first
         guard await whisperState.currentTranscriptionModel != nil else {
@@ -39,6 +41,11 @@ class TranscriptionAPIHandler {
         // Detect audio format from data
         let audioFormat = AudioFormatDetector.detectFormat(from: audioData)
         logger.info("Detected audio format: \(audioFormat.rawValue)")
+        
+        // For large files, log progress
+        if fileSizeMB > 10 {
+            logger.notice("Processing large audio file (\(String(format: "%.1f", fileSizeMB))MB)")
+        }
         
         // Save audio data to temporary file with correct extension
         let tempURL = FileManager.default.temporaryDirectory
@@ -85,11 +92,14 @@ class TranscriptionAPIHandler {
         }
         
         // Process audio file
+        logger.info("Processing audio samples...")
         let samples = try await audioProcessor.processAudioToSamples(tempURL)
+        logger.info("Audio samples processed: \(samples.count) samples")
         
         // Get audio duration
         let audioAsset = AVURLAsset(url: tempURL)
         let duration = CMTimeGetSeconds(try await audioAsset.load(.duration))
+        logger.info("Audio duration: \(String(format: "%.1f", duration)) seconds")
         
         // Create processed audio file
         let processedURL = FileManager.default.temporaryDirectory
@@ -106,6 +116,8 @@ class TranscriptionAPIHandler {
         let transcriptionStart = Date()
         var text: String
         
+        logger.info("Starting transcription with \(currentModel.provider.rawValue) provider...")
+        
         switch currentModel.provider {
         case .local:
             text = try await localTranscriptionService!.transcribe(audioURL: processedURL, model: currentModel)
@@ -118,6 +130,7 @@ class TranscriptionAPIHandler {
         }
         
         let transcriptionDuration = Date().timeIntervalSince(transcriptionStart)
+        logger.info("Transcription completed in \(String(format: "%.1f", transcriptionDuration))s")
         text = text.trimmingCharacters(in: .whitespacesAndNewlines)
         
         // Apply word replacements if enabled

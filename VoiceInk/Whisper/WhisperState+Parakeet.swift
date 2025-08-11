@@ -45,7 +45,7 @@ extension WhisperState {
         do {
             // First try: app support directory + bundle path
             let appSupportDirectory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-                .appendingPathComponent("com.prakashjoshipax.VoiceInk")
+                .appendingPathComponent("com.mgreten.VoiceInk")
             let parakeetModelDirectory = appSupportDirectory.appendingPathComponent("parakeet-tdt-0.6b-v2-coreml")
             
             if FileManager.default.fileExists(atPath: parakeetModelDirectory.path) {
@@ -72,7 +72,7 @@ extension WhisperState {
     @MainActor
     func showParakeetModelInFinder() {
         let appSupportDirectory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("com.prakashjoshipax.VoiceInk")
+            .appendingPathComponent("com.mgreten.VoiceInk")
         let parakeetModelDirectory = appSupportDirectory.appendingPathComponent("parakeet-tdt-0.6b-v2-coreml")
         
         if FileManager.default.fileExists(atPath: parakeetModelDirectory.path) {

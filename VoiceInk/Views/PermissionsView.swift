@@ -256,8 +256,15 @@ struct PermissionsView: View {
                         isGranted: permissionManager.isAccessibilityEnabled,
                         buttonTitle: "Open System Settings",
                         buttonAction: {
-                            if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
-                                NSWorkspace.shared.open(url)
+                            // First prompt for accessibility permission
+                            let options: NSDictionary = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true]
+                            AXIsProcessTrustedWithOptions(options)
+                            
+                            // Then open system preferences as backup
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                                if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
+                                    NSWorkspace.shared.open(url)
+                                }
                             }
                         },
                         checkPermission: { permissionManager.checkAccessibilityPermissions() }

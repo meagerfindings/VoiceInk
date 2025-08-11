@@ -3,7 +3,7 @@ import os
 
 class PromptMigrationService {
     private let logger = Logger(
-        subsystem: "com.prakashjoshipax.VoiceInk",
+        subsystem: "com.mgreten.VoiceInk",
         category: "migration"
     )
     
@@ -26,7 +26,7 @@ class PromptMigrationService {
         let currentVersion = UserDefaults.standard.integer(forKey: migrationVersionKey)
         
         if currentVersion < currentMigrationVersion {
-            let logger = Logger(subsystem: "com.prakashjoshipax.VoiceInk", category: "migration")
+            let logger = Logger(subsystem: "com.mgreten.VoiceInk", category: "migration")
             logger.notice("Starting prompt migration from version \(currentVersion) to \(currentMigrationVersion)")
             
             let migratedPrompts = migrateLegacyPrompts()
@@ -48,7 +48,7 @@ class PromptMigrationService {
     }
     
     private static func migrateLegacyPrompts() -> [CustomPrompt] {
-        let logger = Logger(subsystem: "com.prakashjoshipax.VoiceInk", category: "migration")
+        let logger = Logger(subsystem: "com.mgreten.VoiceInk", category: "migration")
         
         // Try to load legacy prompts
         guard let savedPromptsData = UserDefaults.standard.data(forKey: "customPrompts") else {

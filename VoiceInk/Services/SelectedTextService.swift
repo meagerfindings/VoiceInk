@@ -4,12 +4,12 @@ import AppKit
 class SelectedTextService {
     
     // Private pasteboard type to avoid clipboard history pollution
-    private static let privatePasteboardType = NSPasteboard.PasteboardType("com.prakashjoshipax.VoiceInk.transient")
+    private static let privatePasteboardType = NSPasteboard.PasteboardType("com.mgreten.VoiceInk.transient")
 
     static func fetchSelectedText() -> String? {
         // Don't check for selected text within VoiceInk itself
         guard let frontmostApp = NSWorkspace.shared.frontmostApplication,
-              frontmostApp.bundleIdentifier != "com.prakashjoshipax.VoiceInk" else {
+              frontmostApp.bundleIdentifier != "com.mgreten.VoiceInk" else {
             return nil
         }
 

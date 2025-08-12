@@ -262,24 +262,27 @@ class ConnectionHandler {
         
         let healthData = (try? JSONSerialization.data(withJSONObject: health)) ?? Data()
         
-        let response = """
-        HTTP/1.1 200 OK\r\n\
-        Content-Type: application/json\r\n\
-        Content-Length: \(healthData.count)\r\n\
-        Access-Control-Allow-Origin: *\r\n\
-        \r\n
-        """
+        let response = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: \(healthData.count)\r\nAccess-Control-Allow-Origin: *\r\n\r\n"
         
         var responseData = response.data(using: .utf8) ?? Data()
         responseData.append(healthData)
         
-        connection.send(content: responseData, completion: .contentProcessed { [weak self] _ in
-            self?.connection.cancel()
+        connection.send(content: responseData, completion: .contentProcessed { [weak self] error in
+            if let error = error {
+                print("Health response send error: \(error)")
+            } else {
+                print("Health response sent successfully")
+            }
             
             // Report completion stats
             let processingTime = Date().timeIntervalSince(startTime)
-            let stats = RequestStats(method: "GET", path: "/health", processingTime: processingTime, success: true)
+            let stats = RequestStats(method: "GET", path: "/health", processingTime: processingTime, success: error == nil)
             self?.networkManager?.reportRequestCompletion(stats)
+            
+            // Delay connection cancellation to ensure data is sent
+            DispatchQueue.global().asyncAfter(deadline: .now() + 0.1) {
+                self?.connection.cancel()
+            }
         })
     }
     
@@ -450,13 +453,7 @@ class ConnectionHandler {
     }
     
     private func sendJSONResponse(data: Data) {
-        let response = """
-        HTTP/1.1 200 OK\r\n\
-        Content-Type: application/json\r\n\
-        Content-Length: \(data.count)\r\n\
-        Access-Control-Allow-Origin: *\r\n\
-        \r\n
-        """
+        let response = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: \(data.count)\r\nAccess-Control-Allow-Origin: *\r\n\r\n"
         
         var responseData = response.data(using: .utf8) ?? Data()
         responseData.append(data)
@@ -476,14 +473,7 @@ class ConnectionHandler {
                         statusCode == 500 ? "Internal Server Error" :
                         statusCode == 413 ? "Payload Too Large" : "Error"
         
-        let response = """
-        HTTP/1.1 \(statusCode) \(statusText)\r\n\
-        Content-Type: application/json\r\n\
-        Content-Length: \(json.count)\r\n\
-        Access-Control-Allow-Origin: *\r\n\
-        \r\n
-        \(json)
-        """
+        let response = "HTTP/1.1 \(statusCode) \(statusText)\r\nContent-Type: application/json\r\nContent-Length: \(json.count)\r\nAccess-Control-Allow-Origin: *\r\n\r\n\(json)"
         
         connection.send(content: response.data(using: .utf8), completion: .contentProcessed { [weak self] _ in
             self?.connection.cancel()

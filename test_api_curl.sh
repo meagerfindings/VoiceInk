@@ -23,7 +23,7 @@ else
     echo "Please ensure:"
     echo "  1. VoiceInk is running"
     echo "  2. API server is enabled in Settings > API"
-    echo "  3. Port 7777 is not blocked"
+    echo "  3. Port 5000 is not blocked"
     exit 1
 fi
 

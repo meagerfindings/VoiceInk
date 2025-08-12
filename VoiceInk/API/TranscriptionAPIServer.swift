@@ -152,6 +152,7 @@ class ConnectionHandler {
     private var expectedContentLength: Int?
     private var headerEndIndex: Int?
     private let maxBufferSize = 524288000 // 500MB
+    private var isRequestProcessed = false // Prevent duplicate processing
     
     init(connection: NWConnection, transcriptionProcessor: TranscriptionProcessor, networkManager: NetworkManager) {
         self.connection = connection
@@ -196,10 +197,12 @@ class ConnectionHandler {
                             self.parseContentLength(from: headers)
                             
                             // For GET requests with no body, process immediately
-                            if headers.contains("GET /health") {
+                            if headers.contains("GET /health") && !self.isRequestProcessed {
+                                self.isRequestProcessed = true
                                 self.processHealthRequest()
                                 return
-                            } else if headers.contains("GET ") {
+                            } else if headers.contains("GET ") && !self.isRequestProcessed {
+                                self.isRequestProcessed = true
                                 self.processRequest()
                                 return
                             }
@@ -212,9 +215,10 @@ class ConnectionHandler {
                    let headerEnd = self.headerEndIndex {
                     let currentBodyLength = self.accumulatedData.count - headerEnd
                     
-                    if currentBodyLength >= expectedLength {
+                    if currentBodyLength >= expectedLength && !self.isRequestProcessed {
                         // We have all the data, process it
                         self.logger.info("Complete request received: \(self.accumulatedData.count) bytes total")
+                        self.isRequestProcessed = true
                         self.processRequest()
                         return
                     }
@@ -226,7 +230,8 @@ class ConnectionHandler {
                 self.readNextChunk()
             } else {
                 // Connection completed - process what we have
-                if self.accumulatedData.count > 0 {
+                if self.accumulatedData.count > 0 && !self.isRequestProcessed {
+                    self.isRequestProcessed = true
                     self.processRequest()
                 } else {
                     self.logger.error("Connection closed with no data")
@@ -253,19 +258,15 @@ class ConnectionHandler {
     private func processHealthRequest() {
         let startTime = Date()
         
-        // Create simple health response
-        let health = [
-            "status": "healthy",
-            "service": "VoiceInk API",
-            "timestamp": Date().timeIntervalSince1970
-        ] as [String: Any]
+        // Create simple health JSON string to avoid Content-Length miscalculation
+        let healthJson = "{\"status\":\"healthy\",\"service\":\"VoiceInk API\",\"timestamp\":\(Date().timeIntervalSince1970)}"
         
-        let healthData = (try? JSONSerialization.data(withJSONObject: health)) ?? Data()
+        // Build complete HTTP response with correct Content-Length
+        let response = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: \(healthJson.count)\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n\(healthJson)"
         
-        let response = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: \(healthData.count)\r\nAccess-Control-Allow-Origin: *\r\n\r\n"
+        let responseData = response.data(using: .utf8) ?? Data()
         
-        var responseData = response.data(using: .utf8) ?? Data()
-        responseData.append(healthData)
+        print("Sending health response: \(response.count) bytes")
         
         connection.send(content: responseData, completion: .contentProcessed { [weak self] error in
             if let error = error {
@@ -279,10 +280,8 @@ class ConnectionHandler {
             let stats = RequestStats(method: "GET", path: "/health", processingTime: processingTime, success: error == nil)
             self?.networkManager?.reportRequestCompletion(stats)
             
-            // Delay connection cancellation to ensure data is sent
-            DispatchQueue.global().asyncAfter(deadline: .now() + 0.1) {
-                self?.connection.cancel()
-            }
+            // Immediate connection close
+            self?.connection.cancel()
         })
     }
     
@@ -327,14 +326,11 @@ class ConnectionHandler {
         let bodyStart = separatorRange.upperBound
         let bodyData = accumulatedData.subdata(in: bodyStart..<accumulatedData.count)
         
-        // Route the request
+        // Route the request (health requests already handled in readNextChunk)
         Task {
             do {
                 if method == "POST" && path == "/api/transcribe" {
                     try await handleTranscribeRequest(headers: headers, bodyData: bodyData, startTime: startTime)
-                } else if method == "GET" && path == "/health" {
-                    // Already handled above, but just in case
-                    processHealthRequest()
                 } else {
                     logger.error("Path not found: \(path)")
                     sendErrorResponse(statusCode: 404, message: "Not found")

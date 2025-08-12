@@ -391,29 +391,54 @@ class WorkingHTTPServer {
     }
     
     private func extractFileFromMultipart(_ data: Data, boundary: String, connectionId: String) -> Data? {
-        guard let bodyString = String(data: data, encoding: .utf8) else {
-            logger.error("🔴 CONN-\(connectionId): Failed to decode multipart body")
-            return nil
-        }
+        let boundaryData = ("--" + boundary).data(using: .utf8)!
+        let doubleCRLF = "\r\n\r\n".data(using: .utf8)!
+        let endBoundaryData = ("\r\n--" + boundary).data(using: .utf8)!
         
-        let boundaryMarker = "--" + boundary
-        let parts = bodyString.components(separatedBy: boundaryMarker)
+        // Split by boundary
+        var currentIndex = data.startIndex
         
-        for part in parts {
-            if part.contains("filename=") && part.contains("Content-Type:") {
-                // Find the start of file data (after headers)
-                if let dataStartRange = part.range(of: "\r\n\r\n") {
-                    let dataStart = part.distance(from: part.startIndex, to: dataStartRange.upperBound)
-                    let fileContent = String(part.suffix(from: part.index(part.startIndex, offsetBy: dataStart)))
-                    
-                    // Remove trailing boundary markers
-                    let cleanedContent = fileContent.components(separatedBy: "\r\n--").first ?? fileContent
-                    
-                    if let fileData = cleanedContent.data(using: .utf8) {
-                        logger.debug("📁 CONN-\(connectionId): File extracted from multipart, size: \(fileData.count)")
-                        return fileData
-                    }
+        while currentIndex < data.endIndex {
+            // Find next boundary
+            guard let boundaryRange = data.range(of: boundaryData, options: [], in: currentIndex..<data.endIndex) else {
+                break
+            }
+            
+            // Move past boundary and CRLF
+            currentIndex = boundaryRange.upperBound
+            if currentIndex + 2 <= data.endIndex && data[currentIndex] == 13 && data[currentIndex + 1] == 10 { // \r\n
+                currentIndex += 2
+            }
+            
+            // Find the header/body separator
+            guard let headerEndRange = data.range(of: doubleCRLF, options: [], in: currentIndex..<data.endIndex) else {
+                continue
+            }
+            
+            // Extract headers
+            let headerData = data.subdata(in: currentIndex..<headerEndRange.lowerBound)
+            guard let headerString = String(data: headerData, encoding: .utf8) else {
+                continue
+            }
+            
+            // Check if this part contains a file
+            if headerString.contains("filename=") && headerString.contains("Content-Type:") {
+                // Start of file data
+                let fileStart = headerEndRange.upperBound
+                
+                // Find end of this part (next boundary or end of data)
+                var fileEnd: Data.Index
+                if let nextBoundaryRange = data.range(of: endBoundaryData, options: [], in: fileStart..<data.endIndex) {
+                    fileEnd = nextBoundaryRange.lowerBound
+                } else {
+                    // No end boundary found, use end of data
+                    fileEnd = data.endIndex
                 }
+                
+                // Extract file data
+                let fileData = data.subdata(in: fileStart..<fileEnd)
+                logger.debug("📁 CONN-\(connectionId): File extracted from multipart, size: \(fileData.count)")
+                return fileData
             }
         }
         

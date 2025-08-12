@@ -272,6 +272,12 @@ class WorkingHTTPServer {
         case ("GET", "/health"):
             return handleHealthRequest(connectionId: connectionId)
             
+        case ("GET", "/test"):
+            return handleTestRequest(connectionId: connectionId)
+            
+        case ("POST", "/echo"):
+            return handleEchoRequest(request, connectionId: connectionId)
+            
         case ("POST", "/api/transcribe"):
             return try handleTranscriptionRequest(request, connectionId: connectionId)
             
@@ -300,6 +306,40 @@ class WorkingHTTPServer {
         return HTTPResponse.success(data: jsonData, contentType: "application/json")
     }
     
+    private func handleTestRequest(connectionId: String) -> HTTPResponse {
+        logger.debug("🧪 CONN-\(connectionId): Processing test request")
+        
+        let testData: [String: Any] = [
+            "test": "success",
+            "message": "BSD socket server is working!",
+            "timestamp": ISO8601DateFormatter().string(from: Date())
+        ]
+        
+        guard let jsonData = try? JSONSerialization.data(withJSONObject: testData) else {
+            return HTTPResponse.error(500, "Failed to serialize test data")
+        }
+        
+        return HTTPResponse.success(data: jsonData, contentType: "application/json")
+    }
+    
+    private func handleEchoRequest(_ request: HTTPRequest, connectionId: String) -> HTTPResponse {
+        logger.debug("📢 CONN-\(connectionId): Processing echo request")
+        
+        let echoData: [String: Any] = [
+            "echo": "success",
+            "bodySize": request.body.count,
+            "method": request.method,
+            "path": request.path,
+            "timestamp": ISO8601DateFormatter().string(from: Date())
+        ]
+        
+        guard let jsonData = try? JSONSerialization.data(withJSONObject: echoData) else {
+            return HTTPResponse.error(500, "Failed to serialize echo data")
+        }
+        
+        return HTTPResponse.success(data: jsonData, contentType: "application/json")
+    }
+    
     private func handleTranscriptionRequest(_ request: HTTPRequest, connectionId: String) throws -> HTTPResponse {
         logger.info("🎤 CONN-\(connectionId): Processing transcription request")
         
@@ -318,16 +358,23 @@ class WorkingHTTPServer {
         var transcriptionResult: Data?
         var transcriptionError: Error?
         
+        logger.debug("🔄 CONN-\(connectionId): Starting transcription task...")
+        
         Task {
             do {
+                logger.debug("🔄 CONN-\(connectionId): Calling transcriptionProcessor.transcribe...")
                 transcriptionResult = try await transcriptionProcessor.transcribe(audioData: fileData)
+                logger.debug("✅ CONN-\(connectionId): Transcription completed, result size: \(transcriptionResult?.count ?? 0) bytes")
             } catch {
+                logger.error("🔴 CONN-\(connectionId): Transcription error: \(error)")
                 transcriptionError = error
             }
             semaphore.signal()
         }
         
+        logger.debug("⏳ CONN-\(connectionId): Waiting for transcription to complete...")
         semaphore.wait()
+        logger.debug("✅ CONN-\(connectionId): Transcription wait completed")
         
         if let error = transcriptionError {
             logger.error("🔴 CONN-\(connectionId): Transcription failed: \(error)")
@@ -342,16 +389,13 @@ class WorkingHTTPServer {
     }
     
     private func sendHTTPResponse(_ response: HTTPResponse, to socket: Int32, connectionId: String) {
-        let responseString = """
-        HTTP/1.1 \(response.statusCode) \(response.statusMessage)\r
-        Content-Type: \(response.contentType)\r
-        Content-Length: \(response.data.count)\r
-        Access-Control-Allow-Origin: *\r
-        Access-Control-Allow-Methods: GET, POST, OPTIONS\r
-        Access-Control-Allow-Headers: Content-Type\r
-        \r
-        
-        """
+        let responseString = "HTTP/1.1 \(response.statusCode) \(response.statusMessage)\r\n" +
+                            "Content-Type: \(response.contentType)\r\n" +
+                            "Content-Length: \(response.data.count)\r\n" +
+                            "Access-Control-Allow-Origin: *\r\n" +
+                            "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n" +
+                            "Access-Control-Allow-Headers: Content-Type\r\n" +
+                            "\r\n"
         
         guard let headerData = responseString.data(using: .utf8) else {
             logger.error("🔴 CONN-\(connectionId): Failed to encode response headers")
@@ -359,23 +403,37 @@ class WorkingHTTPServer {
         }
         
         // Send headers
+        logger.debug("📤 CONN-\(connectionId): Sending headers (\(headerData.count) bytes)...")
         let headerBytesSent = headerData.withUnsafeBytes { bytes in
             send(socket, bytes.baseAddress, bytes.count, 0)
         }
         
+        if headerBytesSent == -1 {
+            logger.error("🔴 CONN-\(connectionId): Failed to send headers - errno: \(errno)")
+            return
+        }
+        
         guard headerBytesSent == headerData.count else {
-            logger.error("🔴 CONN-\(connectionId): Failed to send response headers")
+            logger.error("🔴 CONN-\(connectionId): Partial header send: \(headerBytesSent)/\(headerData.count)")
             return
         }
         
-        // Send body
-        let bodyBytesSent = response.data.withUnsafeBytes { bytes in
-            send(socket, bytes.baseAddress, bytes.count, 0)
-        }
-        
-        guard bodyBytesSent == response.data.count else {
-            logger.error("🔴 CONN-\(connectionId): Failed to send response body")
-            return
+        // Send body if present
+        if response.data.count > 0 {
+            logger.debug("📤 CONN-\(connectionId): Sending body (\(response.data.count) bytes)...")
+            let bodyBytesSent = response.data.withUnsafeBytes { bytes in
+                send(socket, bytes.baseAddress, bytes.count, 0)
+            }
+            
+            if bodyBytesSent == -1 {
+                logger.error("🔴 CONN-\(connectionId): Failed to send body - errno: \(errno)")
+                return
+            }
+            
+            guard bodyBytesSent == response.data.count else {
+                logger.error("🔴 CONN-\(connectionId): Partial body send: \(bodyBytesSent)/\(response.data.count)")
+                return
+            }
         }
         
         logger.debug("📤 CONN-\(connectionId): Response sent - \(response.statusCode) (\(response.data.count) bytes)")

@@ -121,6 +121,7 @@ class WorkingHTTPServer {
     
     private func handleConnection(clientSocket: Int32) {
         defer {
+            logger.debug("🔚 Closing socket \(clientSocket)")
             close(clientSocket)
         }
         
@@ -135,7 +136,7 @@ class WorkingHTTPServer {
             return
         }
         
-        logger.debug("📥 CONN-\(connectionId): Request parsed - \(request.method) \(request.path)")
+        logger.debug("📥 CONN-\(connectionId): Request parsed - \(request.method) \(request.path) (body: \(request.body.count) bytes)")
         
         // Route and process request
         let response: HTTPResponse
@@ -145,6 +146,8 @@ class WorkingHTTPServer {
             logger.error("🔴 CONN-\(connectionId): Request processing failed: \(error)")
             response = HTTPResponse.error(500, "Internal Server Error")
         }
+        
+        logger.debug("📤 CONN-\(connectionId): Sending response (status: \(response.statusCode), size: \(response.data.count) bytes)")
         
         // Send response
         sendHTTPResponse(response, to: clientSocket, connectionId: connectionId)
@@ -202,20 +205,32 @@ class WorkingHTTPServer {
                     let bodyStart = headerEnd
                     var bodyData = Data(buffer.dropFirst(bodyStart))
                     
+                    logger.debug("📦 CONN-\(connectionId): Need to read \(contentLength) bytes total, have \(bodyData.count) from initial buffer")
+                    
                     // Read remaining body data if needed
                     while bodyData.count < contentLength {
-                        var chunk = Data(count: min(65536, contentLength - bodyData.count))
+                        let remaining = contentLength - bodyData.count
+                        let chunkSize = min(65536, remaining)
+                        logger.debug("📥 CONN-\(connectionId): Reading chunk of \(chunkSize) bytes (need \(remaining) more)")
+                        
+                        var chunk = Data(count: chunkSize)
                         let bytesRead = chunk.withUnsafeMutableBytes { bytes in
                             recv(socket, bytes.baseAddress, bytes.count, 0)
                         }
                         
+                        if bytesRead == -1 {
+                            logger.error("🔴 CONN-\(connectionId): recv() error: errno=\(errno)")
+                            return nil
+                        }
+                        
                         guard bytesRead > 0 else {
-                            logger.error("🔴 CONN-\(connectionId): Failed to read body data")
+                            logger.error("🔴 CONN-\(connectionId): Connection closed while reading body (needed \(remaining) more bytes)")
                             return nil
                         }
                         
                         chunk.count = bytesRead
                         bodyData.append(chunk)
+                        logger.debug("📦 CONN-\(connectionId): Read \(bytesRead) bytes, total: \(bodyData.count)/\(contentLength)")
                     }
                     
                     return HTTPRequest(
@@ -279,7 +294,9 @@ class WorkingHTTPServer {
             return handleEchoRequest(request, connectionId: connectionId)
             
         case ("POST", "/api/transcribe"):
-            return try handleTranscriptionRequest(request, connectionId: connectionId)
+            // Temporarily return success immediately without processing
+            let successData = "{\"text\":\"Test success\"}".data(using: .utf8)!
+            return HTTPResponse.success(data: successData, contentType: "application/json")
             
         case ("OPTIONS", _):
             return HTTPResponse.options()
@@ -341,18 +358,22 @@ class WorkingHTTPServer {
     }
     
     private func handleTranscriptionRequest(_ request: HTTPRequest, connectionId: String) throws -> HTTPResponse {
-        logger.info("🎤 CONN-\(connectionId): Processing transcription request")
+        logger.info("🎤 CONN-\(connectionId): Processing transcription request, body size: \(request.body.count)")
         
-        guard let boundary = extractBoundary(from: request.headers["content-type"]) else {
-            return HTTPResponse.error(400, "Missing boundary in multipart/form-data")
+        // Return immediately without processing to test if it's the extraction causing the crash
+        let mockResponse: [String: Any] = [
+            "text": "Immediate test response - no processing",
+            "bodySize": request.body.count,
+            "timestamp": ISO8601DateFormatter().string(from: Date())
+        ]
+        
+        guard let jsonData = try? JSONSerialization.data(withJSONObject: mockResponse) else {
+            return HTTPResponse.error(500, "Failed to serialize response")
         }
         
-        guard let fileData = extractFileFromMultipart(request.body, boundary: boundary, connectionId: connectionId) else {
-            return HTTPResponse.error(400, "No file found in request")
-        }
+        return HTTPResponse.success(data: jsonData, contentType: "application/json")
         
-        logger.info("🎤 CONN-\(connectionId): File extracted, size: \(fileData.count) bytes")
-        
+        /* TEMPORARILY DISABLED - async/await bridge may be causing issues
         // Process transcription synchronously using async/await
         let semaphore = DispatchSemaphore(value: 0)
         var transcriptionResult: Data?
@@ -386,6 +407,7 @@ class WorkingHTTPServer {
         }
         
         return HTTPResponse.success(data: result, contentType: "application/json")
+        */
     }
     
     private func sendHTTPResponse(_ response: HTTPResponse, to socket: Int32, connectionId: String) {

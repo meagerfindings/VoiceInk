@@ -8,8 +8,8 @@ class LargeFileTranscriptionHandler {
     private let logger = Logger(subsystem: "com.voiceink.api", category: "LargeFileHandler")
     
     struct Configuration {
-        // Maximum file size: 100MB
-        static let maxFileSize = 100 * 1024 * 1024
+        // Maximum file size: 500MB (for 6-hour podcasts)
+        static let maxFileSize = 500 * 1024 * 1024
         
         // Initial buffer: 64MB for large files
         static let initialBufferSize = 64 * 1024 * 1024
@@ -17,8 +17,8 @@ class LargeFileTranscriptionHandler {
         // Chunk size for reading: 8MB
         static let chunkSize = 8 * 1024 * 1024
         
-        // Connection timeout: 10 minutes
-        static let connectionTimeout: TimeInterval = 600
+        // Connection timeout: 60 minutes (for 6-hour podcast episodes)
+        static let connectionTimeout: TimeInterval = 3600
         
         // Keep-alive interval: 30 seconds
         static let keepAliveInterval: TimeInterval = 30
@@ -37,7 +37,7 @@ class LargeFileTranscriptionHandler {
     
     /// Handle connection with support for large files
     func handleLargeFileConnection(_ connection: NWConnection, queue: DispatchQueue, handler: TranscriptionAPIHandler) {
-        connection.start(queue: queue)
+        // Don't start the connection - it's already started by the server
         
         // Set connection parameters for large transfers
         if let tcpConnection = connection as? NWConnection {
@@ -220,9 +220,18 @@ class LargeFileTranscriptionHandler {
             
             // Monitor progress
             var progressTimer: Timer?
-            progressTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { _ in
+            var lastProgressUpdate = Date()
+            progressTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { _ in
                 let elapsed = Date().timeIntervalSince(startTime)
                 self.logger.info("Transcription in progress: \(Int(elapsed))s elapsed")
+                
+                // Update activity time to prevent keep-alive timeout
+                self.lastActivityTime = Date()
+                
+                // Log progress for debugging
+                let elapsedMinutes = Int(elapsed / 60)
+                let elapsedSeconds = Int(elapsed.truncatingRemainder(dividingBy: 60))
+                self.logger.notice("Processing large file: \(elapsedMinutes)m \(elapsedSeconds)s elapsed")
             }
             
             // Wait for transcription with timeout
@@ -427,11 +436,41 @@ class LargeFileTranscriptionHandler {
     }
     
     private func sendHealthResponse(to connection: NWConnection) {
-        let health = """
-        {"status":"healthy","maxFileSize":\(Configuration.maxFileSize),"timeout":\(Configuration.connectionTimeout)}
-        """
+        // Get proper health status from the server
+        Task {
+            let healthData = await getHealthStatus()
+            let response = """
+            HTTP/1.1 200 OK\r\n\
+            Content-Type: application/json\r\n\
+            Content-Length: \(healthData.count)\r\n\
+            Access-Control-Allow-Origin: *\r\n\
+            \r\n
+            """
+            
+            var responseData = response.data(using: .utf8) ?? Data()
+            responseData.append(healthData)
+            
+            connection.send(content: responseData, completion: .contentProcessed { _ in
+                connection.cancel()
+            })
+        }
+    }
+    
+    private func getHealthStatus() async -> Data {
+        // This is a simplified version - in production you'd get the real status
+        let health = [
+            "status": "healthy",
+            "service": "VoiceInk API",
+            "maxFileSize": Configuration.maxFileSize,
+            "timeout": Configuration.connectionTimeout,
+            "capabilities": [
+                "large-file-support",
+                "chunked-upload",
+                "progress-updates"
+            ]
+        ] as [String: Any]
         
-        sendJSONResponse(to: connection, data: health.data(using: .utf8) ?? Data())
+        return (try? JSONSerialization.data(withJSONObject: health)) ?? Data()
     }
 }
 

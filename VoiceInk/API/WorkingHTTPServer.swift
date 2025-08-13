@@ -189,21 +189,27 @@ class WorkingHTTPServer {
             buffer.append(chunk)
             totalRead += bytesRead
             
-            // Check for end of headers
-            if let headerData = String(data: buffer, encoding: .utf8),
-               let headerEndRange = headerData.range(of: "\r\n\r\n") {
-                let headerEnd = headerData.distance(from: headerData.startIndex, to: headerEndRange.upperBound)
-                let headers = String(headerData.prefix(headerEnd - 4)) // Remove \r\n\r\n
+            // Check for end of headers by searching for \r\n\r\n in the raw bytes
+            let headerEndMarker = Data([13, 10, 13, 10]) // \r\n\r\n
+            if let headerEndRange = buffer.range(of: headerEndMarker) {
+                let headerEnd = headerEndRange.upperBound
+                
+                // Extract just the header portion and convert to string
+                let headerData = buffer.subdata(in: 0..<headerEndRange.lowerBound)
+                guard let headerString = String(data: headerData, encoding: .utf8) else {
+                    logger.error("🔴 CONN-\(connectionId): Headers are not valid UTF-8")
+                    return nil
+                }
                 
                 // Parse request line and headers
-                guard let request = parseHTTPHeaders(headers, connectionId: connectionId) else {
+                guard let request = parseHTTPHeaders(headerString, connectionId: connectionId) else {
                     return nil
                 }
                 
                 // Read body if present
                 if let contentLength = request.contentLength {
-                    let bodyStart = headerEnd
-                    var bodyData = Data(buffer.dropFirst(bodyStart))
+                    // Body starts after the header end marker
+                    var bodyData = buffer.subdata(in: headerEnd..<buffer.endIndex)
                     
                     logger.debug("📦 CONN-\(connectionId): Need to read \(contentLength) bytes total, have \(bodyData.count) from initial buffer")
                     
@@ -294,9 +300,7 @@ class WorkingHTTPServer {
             return handleEchoRequest(request, connectionId: connectionId)
             
         case ("POST", "/api/transcribe"):
-            // Temporarily return success immediately without processing
-            let successData = "{\"text\":\"Test success\"}".data(using: .utf8)!
-            return HTTPResponse.success(data: successData, contentType: "application/json")
+            return try handleTranscriptionRequest(request, connectionId: connectionId)
             
         case ("OPTIONS", _):
             return HTTPResponse.options()
@@ -360,20 +364,20 @@ class WorkingHTTPServer {
     private func handleTranscriptionRequest(_ request: HTTPRequest, connectionId: String) throws -> HTTPResponse {
         logger.info("🎤 CONN-\(connectionId): Processing transcription request, body size: \(request.body.count)")
         
-        // Return immediately without processing to test if it's the extraction causing the crash
-        let mockResponse: [String: Any] = [
-            "text": "Immediate test response - no processing",
-            "bodySize": request.body.count,
-            "timestamp": ISO8601DateFormatter().string(from: Date())
-        ]
-        
-        guard let jsonData = try? JSONSerialization.data(withJSONObject: mockResponse) else {
-            return HTTPResponse.error(500, "Failed to serialize response")
+        guard let boundary = extractBoundary(from: request.headers["content-type"]) else {
+            logger.error("🔴 CONN-\(connectionId): No boundary in content-type: \(request.headers["content-type"] ?? "nil")")
+            return HTTPResponse.error(400, "Missing boundary in multipart/form-data")
         }
         
-        return HTTPResponse.success(data: jsonData, contentType: "application/json")
+        logger.debug("📋 CONN-\(connectionId): Extracting file with boundary: \(boundary)")
         
-        /* TEMPORARILY DISABLED - async/await bridge may be causing issues
+        guard let fileData = extractFileFromMultipart(request.body, boundary: boundary, connectionId: connectionId) else {
+            logger.error("🔴 CONN-\(connectionId): Failed to extract file from multipart data")
+            return HTTPResponse.error(400, "No file found in request")
+        }
+        
+        logger.info("🎉 CONN-\(connectionId): File extracted successfully, size: \(fileData.count) bytes")
+        
         // Process transcription synchronously using async/await
         let semaphore = DispatchSemaphore(value: 0)
         var transcriptionResult: Data?
@@ -407,7 +411,6 @@ class WorkingHTTPServer {
         }
         
         return HTTPResponse.success(data: result, contentType: "application/json")
-        */
     }
     
     private func sendHTTPResponse(_ response: HTTPResponse, to socket: Int32, connectionId: String) {

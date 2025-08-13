@@ -291,34 +291,57 @@ struct PermissionsView: View {
                             title: "Screen Recording Access",
                             description: "Allow VoiceInk to understand context from your screen for transcript Enhancement",
                             isGranted: permissionManager.isScreenRecordingEnabled,
-                            buttonTitle: "Request Permission",
+                            buttonTitle: permissionManager.isScreenRecordingEnabled ? "Permission Granted" : "Open System Settings",
                             buttonAction: {
-                                permissionManager.requestScreenRecordingPermission()
+                                if !permissionManager.isScreenRecordingEnabled {
+                                    // Open system settings directly since permission is already granted
+                                    permissionManager.screenRecordingHelper.openSystemSettings()
+                                    
+                                    // Schedule a re-check after user might have changed settings
+                                    DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                                        permissionManager.checkScreenRecordingPermission()
+                                    }
+                                }
                             },
-                            checkPermission: { permissionManager.checkScreenRecordingPermission() }
+                            checkPermission: { 
+                                permissionManager.checkScreenRecordingPermission()
+                                // Double-check after a short delay in case of async permission updates
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                                    permissionManager.checkScreenRecordingPermission()
+                                }
+                            }
                         )
                         
-                        // Add troubleshooting button if permission not granted
+                        // Add troubleshooting buttons
                         if !permissionManager.isScreenRecordingEnabled {
-                            HStack {
-                                Button("Open System Settings") {
-                                    permissionManager.screenRecordingHelper.openSystemSettings()
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack {
+                                    Button("Force Refresh") {
+                                        // Force multiple checks with delays
+                                        permissionManager.resetScreenRecordingPermission()
+                                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                                            permissionManager.checkScreenRecordingPermission()
+                                        }
+                                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                                            permissionManager.checkScreenRecordingPermission()
+                                        }
+                                    }
+                                    .buttonStyle(.link)
+                                    .font(.caption)
+                                    
+                                    Button("System Settings") {
+                                        permissionManager.screenRecordingHelper.openSystemSettings()
+                                    }
+                                    .buttonStyle(.link)
+                                    .font(.caption)
                                 }
-                                .buttonStyle(.link)
-                                .font(.caption)
-                                
-                                Button("Reset Check") {
-                                    permissionManager.resetScreenRecordingPermission()
-                                }
-                                .buttonStyle(.link)
-                                .font(.caption)
-                            }
-                            .padding(.leading, 40)
-                            
-                            Text("If permission still doesn't work: 1) Toggle VoiceInk OFF then ON in System Settings > Privacy & Security > Screen Recording, 2) Restart VoiceInk")
-                                .font(.caption2)
-                                .foregroundColor(.secondary)
                                 .padding(.leading, 40)
+                                
+                                Text("Troubleshooting: Click 'Force Refresh' after granting permission in System Settings. If still not working, restart VoiceInk.")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                                    .padding(.leading, 40)
+                            }
                         }
                     }
                 }
@@ -328,6 +351,17 @@ struct PermissionsView: View {
         .background(Color(NSColor.controlBackgroundColor))
         .onAppear {
             permissionManager.checkAllPermissions()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            // Re-check permissions when app becomes active
+            permissionManager.checkAllPermissions()
+        }
+        .task {
+            // Periodically check screen recording permission while view is visible
+            while true {
+                try? await Task.sleep(nanoseconds: 2_000_000_000) // Check every 2 seconds
+                permissionManager.checkScreenRecordingPermission()
+            }
         }
     }
 }

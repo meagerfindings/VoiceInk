@@ -16,23 +16,42 @@ class ScreenRecordingHelper: ObservableObject {
     func checkPermission() {
         isCheckingPermission = true
         
-        // Method 1: Use CGPreflightScreenCaptureAccess for quick check
-        let cgAccess = CGPreflightScreenCaptureAccess()
-        
-        // Method 2: Try to use ScreenCaptureKit for more reliable check
+        // Method 1: Try ScreenCaptureKit first for most reliable check
         Task {
             do {
                 // Try to get available content - this will fail if no permission
-                _ = try await SCShareableContent.current
+                let content = try await SCShareableContent.current
+                // If we can get content and it has displays, we have permission
+                let hasAccess = !content.displays.isEmpty
+                
                 await MainActor.run {
-                    self.hasPermission = true
+                    self.hasPermission = hasAccess
                     self.isCheckingPermission = false
+                    print("🔍 Screen Recording Permission Check: \(hasAccess ? "✅ GRANTED" : "❌ DENIED") (via ScreenCaptureKit)")
                 }
             } catch {
-                // If SCShareableContent fails, fall back to CGPreflightScreenCaptureAccess
+                // Method 2: If SCShareableContent fails, try CGWindowListCopyWindowInfo
+                // This is more reliable than CGPreflightScreenCaptureAccess on newer macOS
+                let windowList = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]]
+                let canSeeWindowNames = windowList?.contains { dict in
+                    // Check if we can see window names (requires screen recording permission)
+                    if let ownerName = dict[kCGWindowOwnerName as String] as? String,
+                       let windowName = dict[kCGWindowName as String] as? String {
+                        return !ownerName.isEmpty && !windowName.isEmpty
+                    }
+                    return false
+                } ?? false
+                
+                // Method 3: Fall back to CGPreflightScreenCaptureAccess as last resort
+                let cgAccess = CGPreflightScreenCaptureAccess()
+                
+                // Use the most optimistic result
+                let hasAccess = canSeeWindowNames || cgAccess
+                
                 await MainActor.run {
-                    self.hasPermission = cgAccess
+                    self.hasPermission = hasAccess
                     self.isCheckingPermission = false
+                    print("🔍 Screen Recording Permission Check: \(hasAccess ? "✅ GRANTED" : "❌ DENIED") (windowNames: \(canSeeWindowNames), cgAccess: \(cgAccess))")
                 }
             }
             

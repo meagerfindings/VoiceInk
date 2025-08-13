@@ -356,13 +356,6 @@ struct PermissionsView: View {
             // Re-check permissions when app becomes active
             permissionManager.checkAllPermissions()
         }
-        .task {
-            // Periodically check screen recording permission while view is visible
-            while true {
-                try? await Task.sleep(nanoseconds: 2_000_000_000) // Check every 2 seconds
-                permissionManager.checkScreenRecordingPermission()
-            }
-        }
     }
 }
 

@@ -9,6 +9,7 @@ class ScreenRecordingHelper: ObservableObject {
     @Published var lastCheckTime = Date()
     
     init() {
+        // Don't auto-request on init to avoid loops
         checkPermission()
     }
     
@@ -61,13 +62,25 @@ class ScreenRecordingHelper: ObservableObject {
     
     /// Request screen recording permission with improved handling
     func requestPermission() {
-        // First, try the standard request
+        // Only request once per session to avoid loops
+        if UserDefaults.standard.bool(forKey: "HasRequestedScreenRecordingThisSession") {
+            // Just open settings if already requested this session
+            openSystemSettings()
+            return
+        }
+        
+        UserDefaults.standard.set(true, forKey: "HasRequestedScreenRecordingThisSession")
+        
+        // Request permission
         CGRequestScreenCaptureAccess()
         
-        // Give it a moment to process
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-            // Open System Settings to the correct pane
+        // Open System Settings after a delay
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
             self?.openSystemSettings()
+            // Clear the session flag after some time
+            DispatchQueue.main.asyncAfter(deadline: .now() + 10.0) {
+                UserDefaults.standard.removeObject(forKey: "HasRequestedScreenRecordingThisSession")
+            }
         }
     }
     

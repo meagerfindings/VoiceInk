@@ -30,7 +30,7 @@ enum AIProvider: String, CaseIterable {
         case .openRouter:
             return "https://openrouter.ai/api/v1/chat/completions"
         case .mistral:
-            return "https://api.mistral.ai/v1/audio/transcriptions"
+            return "https://api.mistral.ai/v1/chat/completions"
         case .elevenLabs:
             return "https://api.elevenlabs.io/v1/speech-to-text"
         case .deepgram:
@@ -84,7 +84,8 @@ enum AIProvider: String, CaseIterable {
                 "llama-3.3-70b-versatile",
                 "moonshotai/kimi-k2-instruct",
                 "qwen/qwen3-32b",
-                "meta-llama/llama-4-maverick-17b-128e-instruct"
+                "meta-llama/llama-4-maverick-17b-128e-instruct",
+                "openai/gpt-oss-120b"
             ]
         case .gemini:
             return [

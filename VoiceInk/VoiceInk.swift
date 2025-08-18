@@ -79,7 +79,6 @@ struct VoiceInkApp: App {
         )
         _menuBarManager = StateObject(wrappedValue: menuBarManager)
         
-        // Configure ActiveWindowService with enhancementService
         let activeWindowService = ActiveWindowService.shared
         activeWindowService.configure(with: enhancementService)
         activeWindowService.configureWhisperState(whisperState)
@@ -103,11 +102,9 @@ struct VoiceInkApp: App {
                     .modelContainer(container)
                     .onAppear {
                         updaterViewModel.silentlyCheckForUpdates()
+                        AnnouncementsService.shared.start()
                         
-                        // Start the automatic audio cleanup process
-                        audioCleanupManager.startAutomaticCleanup(modelContext: container.mainContext)
-                        
-                        // Start the transcription auto-cleanup service for zero data retention
+                        // Start the transcription auto-cleanup service (handles immediate and scheduled transcript deletion)
                         transcriptionAutoCleanupService.startMonitoring(modelContext: container.mainContext)
                         
                         // Set API server auto-start to true by default
@@ -120,21 +117,27 @@ struct VoiceInkApp: App {
                         if UserDefaults.standard.bool(forKey: "APIServerAutoStart") {
                             apiServer.start()
                         }
+                        
+                        // Start the automatic audio cleanup process only if transcript cleanup is not enabled
+                        if !UserDefaults.standard.bool(forKey: "IsTranscriptionCleanupEnabled") {
+                            audioCleanupManager.startAutomaticCleanup(modelContext: container.mainContext)
+                        }
                     }
                     .background(WindowAccessor { window in
                         WindowManager.shared.configureWindow(window)
                     })
                     .onDisappear {
+                        AnnouncementsService.shared.stop()
                         whisperState.unloadModel()
-                        
-                        // Stop the automatic audio cleanup process
-                        audioCleanupManager.stopAutomaticCleanup()
                         
                         // Stop the transcription auto-cleanup service
                         transcriptionAutoCleanupService.stopMonitoring()
                         
                         // Stop API server
                         apiServer.stop()
+                        
+                        // Stop the automatic audio cleanup process
+                        audioCleanupManager.stopAutomaticCleanup()
                     }
             } else {
                 OnboardingView(hasCompletedOnboarding: $hasCompletedOnboarding)

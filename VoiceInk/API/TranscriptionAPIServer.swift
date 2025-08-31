@@ -623,6 +623,7 @@ class TranscriptionProcessor {
     
     private let whisperState: WhisperState
     private let apiHandler: TranscriptionAPIHandler
+    weak var apiServer: TranscriptionAPIServer?
     
     init(whisperState: WhisperState) {
         self.whisperState = whisperState
@@ -632,6 +633,20 @@ class TranscriptionProcessor {
     /// Transcribe audio data - runs on background queue, safely accesses MainActor state
     func transcribe(audioData: Data) async throws -> Data {
         logger.info("Starting transcription of \(audioData.count) bytes")
+        
+        // Calculate file size for display
+        let fileSizeMB = Double(audioData.count) / 1024 / 1024
+        let fileSizeInfo = String(format: "%.1f MB", fileSizeMB)
+        
+        // Set processing state
+        await apiServer?.setAPIProcessingState(isProcessing: true, info: "Processing \(fileSizeInfo) audio file...")
+        
+        defer {
+            // Clear processing state when done
+            Task {
+                await apiServer?.setAPIProcessingState(isProcessing: false, info: nil)
+            }
+        }
         
         // Use the existing TranscriptionAPIHandler which already handles MainActor access properly
         return try await apiHandler.transcribe(audioData: audioData)
@@ -648,6 +663,10 @@ class TranscriptionAPIServer: ObservableObject, WorkingHTTPServerDelegate {
     @Published var isRunning = false
     @Published var port: Int = 5000
     @Published var lastError: String?
+    
+    // API transcription processing tracking
+    @Published var isProcessingAPIRequest = false
+    @Published var currentAPIRequestInfo: String?
     
     // Network handling - runs on background queues
     private var httpServer: WorkingHTTPServer?
@@ -681,6 +700,9 @@ class TranscriptionAPIServer: ObservableObject, WorkingHTTPServerDelegate {
         Task { @MainActor in
             await ensureModelIsReady()
         }
+        
+        // Connect processor to this API server for state tracking
+        transcriptionProcessor.apiServer = self
         
         // Create and configure HTTP server
         let allowNetworkAccess = UserDefaults.standard.bool(forKey: "APIServerAllowNetworkAccess")
@@ -915,5 +937,12 @@ class TranscriptionAPIServer: ObservableObject, WorkingHTTPServerDelegate {
         }
         
         return result == KERN_SUCCESS ? Double(info.resident_size) / 1024 / 1024 : 0 // Convert to MB
+    }
+    
+    // MARK: - API Processing State Management
+    
+    func setAPIProcessingState(isProcessing: Bool, info: String? = nil) {
+        self.isProcessingAPIRequest = isProcessing
+        self.currentAPIRequestInfo = info
     }
 }

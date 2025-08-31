@@ -8,6 +8,7 @@ struct MetricsView: View {
     @Query(sort: \Transcription.timestamp) private var transcriptions: [Transcription]
     @EnvironmentObject private var whisperState: WhisperState
     @EnvironmentObject private var hotkeyManager: HotkeyManager
+    @EnvironmentObject private var apiServer: TranscriptionAPIServer
     @StateObject private var licenseViewModel = LicenseViewModel()
     @State private var hasLoadedData = false
     let skipSetupCheck: Bool
@@ -17,9 +18,19 @@ struct MetricsView: View {
     }
     
     var body: some View {
-        VStack {
-            // Trial Message removed for open source build
+        VStack(spacing: 0) {
+            // API Processing Indicator
+            if apiServer.isProcessingAPIRequest, let info = apiServer.currentAPIRequestInfo {
+                APIProcessingIndicator(processingInfo: info)
+                    .padding(.horizontal, 20)
+                    .padding(.top, 16)
+                    .transition(.asymmetric(
+                        insertion: .move(edge: .top).combined(with: .opacity),
+                        removal: .move(edge: .top).combined(with: .opacity)
+                    ))
+            }
             
+            // Main content
             Group {
                 if skipSetupCheck {
                     MetricsContent(transcriptions: Array(transcriptions))
@@ -31,6 +42,7 @@ struct MetricsView: View {
             }
         }
         .background(Color(.controlBackgroundColor))
+        .animation(.easeInOut(duration: 0.3), value: apiServer.isProcessingAPIRequest)
         .task {
             // Ensure the model context is ready
             hasLoadedData = true

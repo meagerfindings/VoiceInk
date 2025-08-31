@@ -107,11 +107,14 @@ enum AIProvider: String, CaseIterable {
             return [
                 "gpt-5",
                 "gpt-5-mini",
-                "gpt-5-nano"
+                "gpt-5-nano",
+                "gpt-4.1",
+                "gpt-4.1-mini"
             ]
         case .mistral:
             return [
                 "mistral-large-latest",
+                "mistral-medium-latest",
                 "mistral-small-latest",
                 "mistral-saba-latest"
             ]
@@ -326,15 +329,30 @@ class AIService: ObservableObject {
         
         request.httpBody = try? JSONSerialization.data(withJSONObject: testBody)
         
+        logger.notice("🔑 Verifying API key for \(self.selectedProvider.rawValue, privacy: .public) provider at \(url.absoluteString, privacy: .public)")
+        
         URLSession.shared.dataTask(with: request) { data, response, error in
             if let error = error {
+                self.logger.notice("🔑 API key verification failed for \(self.selectedProvider.rawValue, privacy: .public): \(error.localizedDescription, privacy: .public)")
                 completion(false)
                 return
             }
             
             if let httpResponse = response as? HTTPURLResponse {
-                completion(httpResponse.statusCode == 200)
+                let isValid = httpResponse.statusCode == 200
+                
+                if !isValid {
+                    // Log the exact API error response
+                    if let data = data, let exactAPIError = String(data: data, encoding: .utf8) {
+                        self.logger.notice("🔑 API key verification failed for \(self.selectedProvider.rawValue, privacy: .public) - Status: \(httpResponse.statusCode) - \(exactAPIError, privacy: .public)")
+                    } else {
+                        self.logger.notice("🔑 API key verification failed for \(self.selectedProvider.rawValue, privacy: .public) - Status: \(httpResponse.statusCode)")
+                    }
+                }
+                
+                completion(isValid)
             } else {
+                self.logger.notice("🔑 API key verification failed for \(self.selectedProvider.rawValue, privacy: .public): Invalid response")
                 completion(false)
             }
         }.resume()

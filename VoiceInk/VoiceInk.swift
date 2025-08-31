@@ -3,6 +3,7 @@ import SwiftData
 import Sparkle
 import AppKit
 import OSLog
+import AppIntents
 
 @main
 struct VoiceInkApp: App {
@@ -86,6 +87,13 @@ struct VoiceInkApp: App {
         
         // Initialize API server
         _apiServer = StateObject(wrappedValue: TranscriptionAPIServer(whisperState: whisperState))
+        
+        // Ensure no lingering recording state from previous runs
+        Task {
+            await whisperState.resetOnLaunch()
+        }
+        
+        AppShortcuts.updateAppShortcutParameters()
     }
     
     var body: some Scene {
@@ -192,6 +200,8 @@ struct VoiceInkApp: App {
 }
 
 class UpdaterViewModel: ObservableObject {
+    @AppStorage("autoUpdateCheck") private var autoUpdateCheck = true
+    
     private let updaterController: SPUStandardUpdaterController
     
     @Published var canCheckForUpdates = false
@@ -200,11 +210,15 @@ class UpdaterViewModel: ObservableObject {
         updaterController = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
         
         // Enable automatic update checking
-        updaterController.updater.automaticallyChecksForUpdates = true
+        updaterController.updater.automaticallyChecksForUpdates = autoUpdateCheck
         updaterController.updater.updateCheckInterval = 24 * 60 * 60
         
         updaterController.updater.publisher(for: \.canCheckForUpdates)
             .assign(to: &$canCheckForUpdates)
+    }
+    
+    func toggleAutoUpdates(_ value: Bool) {
+        updaterController.updater.automaticallyChecksForUpdates = value
     }
     
     func checkForUpdates() {

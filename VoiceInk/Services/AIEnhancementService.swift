@@ -61,6 +61,7 @@ class AIEnhancementService: ObservableObject {
     
     private let aiService: AIService
     private let screenCaptureService: ScreenCaptureService
+    private let dictionaryContextService: DictionaryContextService
     private let baseTimeout: TimeInterval = 30
     private let rateLimitInterval: TimeInterval = 1.0
     private var lastRequestTime: Date?
@@ -70,6 +71,7 @@ class AIEnhancementService: ObservableObject {
         self.aiService = aiService
         self.modelContext = modelContext
         self.screenCaptureService = ScreenCaptureService()
+        self.dictionaryContextService = DictionaryContextService.shared
         
         self.isEnhancementEnabled = UserDefaults.standard.bool(forKey: "isAIEnhancementEnabled")
         self.useClipboardContext = UserDefaults.standard.bool(forKey: "useClipboardContext")
@@ -134,14 +136,19 @@ class AIEnhancementService: ObservableObject {
            let selectedText = selectedText, !selectedText.isEmpty {
             
             let selectedTextContext = "\n\nSelected Text: \(selectedText)"
-            let contextSection = "\n\n<CONTEXT_INFORMATION>\(selectedTextContext)\n</CONTEXT_INFORMATION>"
-            return activePrompt.promptText + contextSection
+            let generalContextSection = "\n\n<CONTEXT_INFORMATION>\(selectedTextContext)\n</CONTEXT_INFORMATION>"
+            let dictionaryContextSection = if !dictionaryContextService.getDictionaryContext().isEmpty {
+                "\n\n<DICTIONARY_CONTEXT>\(dictionaryContextService.getDictionaryContext())\n</DICTIONARY_CONTEXT>"
+            } else {
+                ""
+            }
+            return activePrompt.promptText + generalContextSection + dictionaryContextSection
         }
         
         let clipboardContext = if useClipboardContext,
                               let clipboardText = NSPasteboard.general.string(forType: .string),
                               !clipboardText.isEmpty {
-            "\n\nAvailable Clipboard Context: \(clipboardText)"
+            "\n\n<CLIPBOARD_CONTEXT>\n\(clipboardText)\n</CLIPBOARD_CONTEXT>"
         } else {
             ""
         }
@@ -154,28 +161,35 @@ class AIEnhancementService: ObservableObject {
             ""
         }
         
-        let contextSection = if !clipboardContext.isEmpty || !screenCaptureContext.isEmpty {
+        let dictionaryContext = dictionaryContextService.getDictionaryContext()
+        
+        let generalContextSection = if !clipboardContext.isEmpty || !screenCaptureContext.isEmpty {
             "\n\n<CONTEXT_INFORMATION>\(clipboardContext)\(screenCaptureContext)\n</CONTEXT_INFORMATION>"
         } else {
             ""
         }
         
+        let dictionaryContextSection = if !dictionaryContext.isEmpty {
+            "\n\n<DICTIONARY_CONTEXT>\(dictionaryContext)\n</DICTIONARY_CONTEXT>"
+        } else {
+            ""
+        }
+        
         guard let activePrompt = activePrompt else {
-            // Use default prompt when none is selected
             if let defaultPrompt = allPrompts.first(where: { $0.id == PredefinedPrompts.defaultPromptId }) {
                 var systemMessage = String(format: AIPrompts.customPromptTemplate, defaultPrompt.promptText)
-                systemMessage += contextSection
+                systemMessage += generalContextSection + dictionaryContextSection
                 return systemMessage
             }
-            return AIPrompts.assistantMode + contextSection
+            return AIPrompts.assistantMode + generalContextSection + dictionaryContextSection
         }
         
         if activePrompt.id == PredefinedPrompts.assistantPromptId {
-            return activePrompt.promptText + contextSection
+            return activePrompt.promptText + generalContextSection + dictionaryContextSection
         }
         
         var systemMessage = String(format: AIPrompts.customPromptTemplate, activePrompt.promptText)
-        systemMessage += contextSection
+        systemMessage += generalContextSection + dictionaryContextSection
         return systemMessage
     }
     
@@ -247,12 +261,16 @@ class AIEnhancementService: ObservableObject {
                     
                     let filteredText = AIEnhancementOutputFilter.filter(enhancedText.trimmingCharacters(in: .whitespacesAndNewlines))
                     return filteredText
+                } else if (500...599).contains(httpResponse.statusCode) {
+                    throw EnhancementError.serverError
                 } else {
                     let errorString = String(data: data, encoding: .utf8) ?? "Could not decode error response."
                     throw EnhancementError.customError("HTTP \(httpResponse.statusCode): \(errorString)")
                 }
                 
             } catch let error as EnhancementError {
+                throw error
+            } catch let error as URLError {
                 throw error
             } catch {
                 throw EnhancementError.customError(error.localizedDescription)
@@ -298,6 +316,8 @@ class AIEnhancementService: ObservableObject {
 
                     let filteredText = AIEnhancementOutputFilter.filter(enhancedText.trimmingCharacters(in: .whitespacesAndNewlines))
                     return filteredText
+                } else if (500...599).contains(httpResponse.statusCode) {
+                    throw EnhancementError.serverError
                 } else {
                     let errorString = String(data: data, encoding: .utf8) ?? "Could not decode error response."
                     throw EnhancementError.customError("HTTP \(httpResponse.statusCode): \(errorString)")
@@ -305,21 +325,69 @@ class AIEnhancementService: ObservableObject {
 
             } catch let error as EnhancementError {
                 throw error
+            } catch let error as URLError {
+                throw error
             } catch {
                 throw EnhancementError.customError(error.localizedDescription)
             }
         }
     }
     
-    func enhance(_ text: String) async throws -> (String, TimeInterval) {
+    private func makeRequestWithRetry(text: String, mode: EnhancementPrompt, maxRetries: Int = 3, initialDelay: TimeInterval = 1.0) async throws -> String {
+        var retries = 0
+        var currentDelay = initialDelay
+
+        while retries < maxRetries {
+            do {
+                return try await makeRequest(text: text, mode: mode)
+            } catch let error as EnhancementError {
+                switch error {
+                case .networkError, .serverError:
+                    retries += 1
+                    if retries < maxRetries {
+                        logger.warning("Request failed, retrying in \(currentDelay)s... (Attempt \(retries)/\(maxRetries))")
+                        try await Task.sleep(nanoseconds: UInt64(currentDelay * 1_000_000_000))
+                        currentDelay *= 2 // Exponential backoff
+                    } else {
+                        logger.error("Request failed after \(maxRetries) retries.")
+                        throw error
+                    }
+                default:
+                    throw error
+                }
+            } catch {
+                // For other errors, check if it's a network-related URLError
+                let nsError = error as NSError
+                if nsError.domain == NSURLErrorDomain && [NSURLErrorNotConnectedToInternet, NSURLErrorTimedOut, NSURLErrorNetworkConnectionLost].contains(nsError.code) {
+                    retries += 1
+                    if retries < maxRetries {
+                        logger.warning("Request failed with network error, retrying in \(currentDelay)s... (Attempt \(retries)/\(maxRetries))")
+                        try await Task.sleep(nanoseconds: UInt64(currentDelay * 1_000_000_000))
+                        currentDelay *= 2 // Exponential backoff
+                    } else {
+                        logger.error("Request failed after \(maxRetries) retries with network error.")
+                        throw EnhancementError.networkError
+                    }
+                } else {
+                    throw error
+                }
+            }
+        }
+
+        // This part should ideally not be reached, but as a fallback:
+        throw EnhancementError.enhancementFailed
+    }
+
+    func enhance(_ text: String) async throws -> (String, TimeInterval, String?) {
         let startTime = Date()
         let enhancementPrompt: EnhancementPrompt = .transcriptionEnhancement
+        let promptName = activePrompt?.title
         
         do {
-            let result = try await makeRequest(text: text, mode: enhancementPrompt)
+            let result = try await makeRequestWithRetry(text: text, mode: enhancementPrompt)
             let endTime = Date()
             let duration = endTime.timeIntervalSince(startTime)
-            return (result, duration)
+            return (result, duration, promptName)
         } catch {
             throw error
         }
@@ -389,6 +457,7 @@ enum EnhancementError: Error {
     case invalidResponse
     case enhancementFailed
     case networkError
+    case serverError
     case customError(String)
 }
 
@@ -403,6 +472,8 @@ extension EnhancementError: LocalizedError {
             return "AI enhancement failed to process the text."
         case .networkError:
             return "Network connection failed. Check your internet."
+        case .serverError:
+            return "The AI provider's server encountered an error. Please try again later."
         case .customError(let message):
             return message
         }

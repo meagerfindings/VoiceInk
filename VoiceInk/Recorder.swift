@@ -14,6 +14,7 @@ class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
     private let playbackController = PlaybackController.shared
     @Published var audioMeter = AudioMeter(averagePower: 0, peakPower: 0)
     private var audioLevelCheckTask: Task<Void, Never>?
+    private var audioMeterUpdateTask: Task<Void, Never>?
     private var hasDetectedAudioInCurrentSession = false
     
     enum RecorderError: Error {
@@ -76,10 +77,13 @@ class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
         
         hasDetectedAudioInCurrentSession = false
         
-        Task { 
-            await playbackController.pauseMedia()
-            _ = await mediaController.muteSystemAudio()
-        }
+        // Coordinate media control and system audio sequentially for better reliability
+        await playbackController.pauseMedia()
+        
+        // Small delay to allow media command to process before muting system audio
+        try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
+        
+        _ = await mediaController.muteSystemAudio()
         
         let deviceID = deviceManager.getCurrentDevice()
         if deviceID != 0 {
@@ -111,9 +115,10 @@ class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
             }
             
             audioLevelCheckTask?.cancel()
+            audioMeterUpdateTask?.cancel()
             
-            Task {
-                while recorder != nil {
+            audioMeterUpdateTask = Task {
+                while recorder != nil && !Task.isCancelled {
                     updateAudioMeter()
                     try? await Task.sleep(nanoseconds: 33_000_000)
                 }
@@ -149,6 +154,7 @@ class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
     
     func stopRecording() {
         audioLevelCheckTask?.cancel()
+        audioMeterUpdateTask?.cancel()
         recorder?.stop()
         recorder = nil
         audioMeter = AudioMeter(averagePower: 0, peakPower: 0)
@@ -225,6 +231,8 @@ class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
     }
     
     deinit {
+        audioLevelCheckTask?.cancel()
+        audioMeterUpdateTask?.cancel()
         if let observer = deviceObserver {
             NotificationCenter.default.removeObserver(observer)
         }

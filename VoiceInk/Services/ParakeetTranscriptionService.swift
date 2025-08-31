@@ -26,17 +26,8 @@ class ParakeetTranscriptionService: TranscriptionService {
         logger.notice("🦜 Starting Parakeet model loading")
         
         do {
-            let asrConfig = ASRConfig(
-                maxSymbolsPerFrame: 3,
-                realtimeMode: true,
-                chunkSizeMs: 1500,
-                tdtConfig: TdtConfig(
-                    durations: [0, 1, 2, 3, 4],
-                    maxSymbolsPerStep: 3
-                )
-            )
-            asrManager = AsrManager(config: asrConfig)
-            
+         
+            asrManager = AsrManager(config: .default) 
             let models: AsrModels
             if let customDirectory = customModelsDirectory {
                 logger.notice("🦜 Loading models from custom directory: \(customDirectory.path)")
@@ -88,6 +79,7 @@ class ParakeetTranscriptionService: TranscriptionService {
         
         let result = try await asrManager.transcribe(audioSamples)
         
+        // Reset decoder state and cleanup after transcription to avoid blocking the transcription start
         Task {
             asrManager.cleanup()
             isModelLoaded = false
@@ -110,7 +102,7 @@ class ParakeetTranscriptionService: TranscriptionService {
             let data = try Data(contentsOf: url)
             
             // Check minimum file size for valid WAV header
-            guard data.count > 44 else { 
+            guard data.count > 44 else {
                 logger.notice("🦜 Audio file too small (\(data.count) bytes), expected > 44 bytes")
                 throw ASRError.invalidAudioData
             }
@@ -129,4 +121,4 @@ class ParakeetTranscriptionService: TranscriptionService {
         }
     }
 
-} 
+}

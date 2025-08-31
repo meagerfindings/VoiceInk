@@ -1,5 +1,24 @@
 import SwiftUI
 
+// MARK: - Hover Interaction Manager
+class HoverInteraction: ObservableObject {
+    @Published var isHovered: Bool = false
+    private var timer: Timer?
+
+    func setHover(on: Bool, delay: TimeInterval = 0.1) {
+        if on {
+            timer?.invalidate()
+            if !isHovered {
+                isHovered = true
+            }
+        } else {
+            timer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] _ in
+                self?.isHovered = false
+            }
+        }
+    }
+}
+
 // MARK: - Generic Toggle Button Component
 struct RecorderToggleButton: View {
     let isEnabled: Bool
@@ -102,6 +121,7 @@ struct ProcessingIndicator: View {
 // MARK: - Progress Animation Component
 struct ProgressAnimation: View {
     @State private var currentDot = 0
+    @State private var timer: Timer?
     let animationSpeed: Double
     
     var body: some View {
@@ -113,10 +133,14 @@ struct ProgressAnimation: View {
             }
         }
         .onAppear {
-            Timer.scheduledTimer(withTimeInterval: animationSpeed, repeats: true) { _ in
+            timer = Timer.scheduledTimer(withTimeInterval: animationSpeed, repeats: true) { _ in
                 currentDot = (currentDot + 1) % 7
                 if currentDot >= 5 { currentDot = -1 }
             }
+        }
+        .onDisappear {
+            timer?.invalidate()
+            timer = nil
         }
     }
 }
@@ -127,7 +151,8 @@ struct RecorderPromptButton: View {
     @Binding var showPopover: Bool
     let buttonSize: CGFloat
     let padding: EdgeInsets
-    
+    @StateObject private var hoverInteraction = HoverInteraction()
+
     init(showPopover: Binding<Bool>, buttonSize: CGFloat = 28, padding: EdgeInsets = EdgeInsets(top: 0, leading: 7, bottom: 0, trailing: 0)) {
         self._showPopover = showPopover
         self.buttonSize = buttonSize
@@ -149,9 +174,16 @@ struct RecorderPromptButton: View {
         }
         .frame(width: buttonSize)
         .padding(padding)
+        .onHover { hoverInteraction.setHover(on: $0) }
         .popover(isPresented: $showPopover, arrowEdge: .bottom) {
             EnhancementPromptPopover()
                 .environmentObject(enhancementService)
+                .onHover { hoverInteraction.setHover(on: $0) }
+        }
+        .onChange(of: hoverInteraction.isHovered) { isHovered in
+            if isHovered != showPopover {
+                showPopover = isHovered
+            }
         }
     }
 }
@@ -162,6 +194,7 @@ struct RecorderPowerModeButton: View {
     @Binding var showPopover: Bool
     let buttonSize: CGFloat
     let padding: EdgeInsets
+    @StateObject private var hoverInteraction = HoverInteraction()
     
     init(showPopover: Binding<Bool>, buttonSize: CGFloat = 28, padding: EdgeInsets = EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 7)) {
         self._showPopover = showPopover
@@ -180,8 +213,15 @@ struct RecorderPowerModeButton: View {
         }
         .frame(width: buttonSize)
         .padding(padding)
+        .onHover { hoverInteraction.setHover(on: $0) }
         .popover(isPresented: $showPopover, arrowEdge: .bottom) {
             PowerModePopover()
+                .onHover { hoverInteraction.setHover(on: $0) }
+        }
+        .onChange(of: hoverInteraction.isHovered) { isHovered in
+            if isHovered != showPopover {
+                showPopover = isHovered
+            }
         }
     }
 }
@@ -233,4 +273,4 @@ struct RecorderStatusDisplay: View {
             }
         }
     }
-} 
+}

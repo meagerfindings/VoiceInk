@@ -83,13 +83,8 @@ extension WhisperState {
     @MainActor
     func showParakeetModelInFinder() {
         let appSupportDirectory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-<<<<<<< HEAD
             .appendingPathComponent("com.mgreten.VoiceInk")
-        let parakeetModelDirectory = appSupportDirectory.appendingPathComponent("parakeet-tdt-0.6b-v2-coreml")
-=======
-            .appendingPathComponent("com.prakashjoshipax.VoiceInk")
         let parakeetModelDirectory = appSupportDirectory.appendingPathComponent("parakeet-tdt-0.6b-v3-coreml")
->>>>>>> upstream/main
         
         if FileManager.default.fileExists(atPath: parakeetModelDirectory.path) {
             NSWorkspace.shared.selectFile(parakeetModelDirectory.path, inFileViewerRootedAtPath: "")

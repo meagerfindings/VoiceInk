@@ -350,12 +350,14 @@ class WhisperState: NSObject, ObservableObject {
             
             // Trial expired message removed for open source build
 
-            text += " "
+            let shouldAddSpace = UserDefaults.standard.object(forKey: "AppendTrailingSpace") as? Bool ?? true
+            if shouldAddSpace {
+                text += " "
+            }
 
             if await checkCancellationAndCleanup() { return }
 
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                
                 CursorPaster.pasteAtCursor(text)
 
                 let powerMode = PowerModeManager.shared

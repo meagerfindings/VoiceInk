@@ -371,12 +371,15 @@ class WorkingHTTPServer {
         
         logger.debug("📋 CONN-\(connectionId): Extracting file with boundary: \(boundary)")
         
-        guard let fileData = extractFileFromMultipart(request.body, boundary: boundary, connectionId: connectionId) else {
+        guard let fileResult = extractFileFromMultipart(request.body, boundary: boundary, connectionId: connectionId) else {
             logger.error("🔴 CONN-\(connectionId): Failed to extract file from multipart data")
             return HTTPResponse.error(400, "No file found in request")
         }
         
-        logger.info("🎉 CONN-\(connectionId): File extracted successfully, size: \(fileData.count) bytes")
+        let fileData = fileResult.data
+        let filename = fileResult.filename
+        
+        logger.info("🎉 CONN-\(connectionId): File extracted successfully, size: \(fileData.count) bytes, filename: \(filename ?? "none")")
         
         // Process transcription synchronously using async/await
         let semaphore = DispatchSemaphore(value: 0)
@@ -388,7 +391,7 @@ class WorkingHTTPServer {
         Task {
             do {
                 logger.debug("🔄 CONN-\(connectionId): Calling transcriptionProcessor.transcribe...")
-                transcriptionResult = try await transcriptionProcessor.transcribe(audioData: fileData)
+                transcriptionResult = try await transcriptionProcessor.transcribe(audioData: fileData, filename: filename)
                 logger.debug("✅ CONN-\(connectionId): Transcription completed, result size: \(transcriptionResult?.count ?? 0) bytes")
             } catch {
                 logger.error("🔴 CONN-\(connectionId): Transcription error: \(error)")
@@ -473,7 +476,28 @@ class WorkingHTTPServer {
         return String(contentType.suffix(from: boundaryRange.upperBound))
     }
     
-    private func extractFileFromMultipart(_ data: Data, boundary: String, connectionId: String) -> Data? {
+    private func extractFilename(from headerString: String) -> String? {
+        // Look for filename= in the Content-Disposition header
+        guard let filenameRange = headerString.range(of: "filename=") else {
+            return nil
+        }
+        
+        let afterFilename = headerString.suffix(from: filenameRange.upperBound)
+        
+        // Handle quoted filenames
+        if afterFilename.hasPrefix("\"") {
+            let quotedContent = afterFilename.dropFirst()
+            if let endQuote = quotedContent.firstIndex(of: "\"") {
+                return String(quotedContent.prefix(upTo: endQuote))
+            }
+        }
+        
+        // Handle unquoted filenames (up to semicolon or end of line)
+        let filename = afterFilename.components(separatedBy: CharacterSet(charactersIn: ";\r\n")).first ?? ""
+        return filename.trimmingCharacters(in: .whitespaces).isEmpty ? nil : filename.trimmingCharacters(in: .whitespaces)
+    }
+    
+    private func extractFileFromMultipart(_ data: Data, boundary: String, connectionId: String) -> (data: Data, filename: String?)? {
         let boundaryData = ("--" + boundary).data(using: .utf8)!
         let doubleCRLF = "\r\n\r\n".data(using: .utf8)!
         let endBoundaryData = ("\r\n--" + boundary).data(using: .utf8)!
@@ -506,6 +530,9 @@ class WorkingHTTPServer {
             
             // Check if this part contains a file
             if headerString.contains("filename=") && headerString.contains("Content-Type:") {
+                // Extract filename from headers
+                let filename = extractFilename(from: headerString)
+                
                 // Start of file data
                 let fileStart = headerEndRange.upperBound
                 
@@ -520,8 +547,8 @@ class WorkingHTTPServer {
                 
                 // Extract file data
                 let fileData = data.subdata(in: fileStart..<fileEnd)
-                logger.debug("📁 CONN-\(connectionId): File extracted from multipart, size: \(fileData.count)")
-                return fileData
+                logger.debug("📁 CONN-\(connectionId): File extracted from multipart, size: \(fileData.count), filename: \(filename ?? "none")")
+                return (data: fileData, filename: filename)
             }
         }
         

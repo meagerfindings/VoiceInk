@@ -631,15 +631,23 @@ class TranscriptionProcessor {
     }
     
     /// Transcribe audio data - runs on background queue, safely accesses MainActor state
-    func transcribe(audioData: Data) async throws -> Data {
-        logger.info("Starting transcription of \(audioData.count) bytes")
+    func transcribe(audioData: Data, filename: String? = nil) async throws -> Data {
+        logger.info("Starting transcription of \(audioData.count) bytes, filename: \(filename ?? "none")")
         
         // Calculate file size for display
         let fileSizeMB = Double(audioData.count) / 1024 / 1024
         let fileSizeInfo = String(format: "%.1f MB", fileSizeMB)
         
+        // Create processing info message with filename if available
+        let processingInfo: String
+        if let filename = filename {
+            processingInfo = "Processing \(filename) (\(fileSizeInfo))"
+        } else {
+            processingInfo = "Processing \(fileSizeInfo) audio file..."
+        }
+        
         // Set processing state
-        await apiServer?.setAPIProcessingState(isProcessing: true, info: "Processing \(fileSizeInfo) audio file...")
+        await apiServer?.setAPIProcessingState(isProcessing: true, info: processingInfo)
         
         defer {
             // Clear processing state when done

@@ -3,6 +3,7 @@ import Charts
 
 struct MetricsContent: View {
     let transcriptions: [Transcription]
+    @EnvironmentObject private var apiServer: TranscriptionAPIServer
     
     var body: some View {
         if transcriptions.isEmpty {
@@ -10,6 +11,11 @@ struct MetricsContent: View {
         } else {
             ScrollView {
                 VStack(spacing: 20) {
+                    // API Statistics Section - only show if there are API transcriptions
+                    if apiServer.apiTranscriptionCount > 0 {
+                        APITranscriptionStatsView()
+                    }
+                    
                     TimeEfficiencyView(totalRecordedTime: totalRecordedTime, estimatedTypingTime: estimatedTypingTime)
                     
                     metricsGrid
@@ -46,7 +52,7 @@ struct MetricsContent: View {
             )
             MetricCard(
                 title: "VoiceInk Sessions",
-                value: "\(transcriptions.count)",
+                value: "\(uiTranscriptions.count)",
                 icon: "mic.circle.fill",
                 color: .green
             )
@@ -108,13 +114,18 @@ struct MetricsContent: View {
         .shadow(radius: 2)
     }
     
-    // Computed properties for metrics
+    // Filter transcriptions by source
+    private var uiTranscriptions: [Transcription] {
+        transcriptions.filter { $0.source != "api" }
+    }
+    
+    // Computed properties for UI metrics (excluding API)
     private var totalWordsTranscribed: Int {
-        transcriptions.reduce(0) { $0 + $1.text.split(separator: " ").count }
+        uiTranscriptions.reduce(0) { $0 + $1.text.split(separator: " ").count }
     }
     
     private var totalRecordedTime: TimeInterval {
-        transcriptions.reduce(0) { $0 + $1.duration }
+        uiTranscriptions.reduce(0) { $0 + $1.duration }
     }
     
     private var estimatedTypingTime: TimeInterval {
@@ -133,7 +144,7 @@ struct MetricsContent: View {
             guard let date = calendar.date(byAdding: .day, value: -dayOffset, to: now) else { return nil }
             let startOfDay = calendar.startOfDay(for: date)
             let endOfDay = calendar.date(byAdding: .day, value: 1, to: startOfDay)!
-            let count = transcriptions.filter { $0.timestamp >= startOfDay && $0.timestamp < endOfDay }.count
+            let count = uiTranscriptions.filter { $0.timestamp >= startOfDay && $0.timestamp < endOfDay }.count
             return (date: startOfDay, count: count)
         }
         
@@ -147,7 +158,7 @@ struct MetricsContent: View {
     }
     
     private var averageWordsPerSession: Double {
-        guard !transcriptions.isEmpty else { return 0 }
-        return Double(totalWordsTranscribed) / Double(transcriptions.count)
+        guard !uiTranscriptions.isEmpty else { return 0 }
+        return Double(totalWordsTranscribed) / Double(uiTranscriptions.count)
     }
 } 

@@ -86,7 +86,8 @@ struct VoiceInkApp: App {
         _activeWindowService = StateObject(wrappedValue: activeWindowService)
         
         // Initialize API server
-        _apiServer = StateObject(wrappedValue: TranscriptionAPIServer(whisperState: whisperState))
+        let apiServer = TranscriptionAPIServer(whisperState: whisperState, modelContext: container.mainContext)
+        _apiServer = StateObject(wrappedValue: apiServer)
         
         // Ensure no lingering recording state from previous runs
         Task {

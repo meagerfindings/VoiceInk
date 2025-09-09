@@ -1,5 +1,6 @@
 import Foundation
 import Network
+import SwiftData
 import os
 
 // MARK: - Supporting Classes
@@ -622,12 +623,12 @@ class TranscriptionProcessor {
     private let logger = Logger(subsystem: "com.voiceink.api", category: "TranscriptionProcessor")
     
     private let whisperState: WhisperState
-    private let apiHandler: TranscriptionAPIHandler
+    let apiHandler: TranscriptionAPIHandler // Made public for API server to access
     weak var apiServer: TranscriptionAPIServer?
     
-    init(whisperState: WhisperState) {
+    init(whisperState: WhisperState, modelContext: ModelContext) {
         self.whisperState = whisperState
-        self.apiHandler = TranscriptionAPIHandler(whisperState: whisperState)
+        self.apiHandler = TranscriptionAPIHandler(whisperState: whisperState, modelContext: modelContext)
     }
     
     /// Transcribe audio data - runs on background queue, safely accesses MainActor state
@@ -657,7 +658,7 @@ class TranscriptionProcessor {
         }
         
         // Use the existing TranscriptionAPIHandler which already handles MainActor access properly
-        return try await apiHandler.transcribe(audioData: audioData)
+        return try await apiHandler.transcribe(audioData: audioData, filename: filename)
     }
 }
 
@@ -676,6 +677,11 @@ class TranscriptionAPIServer: ObservableObject, WorkingHTTPServerDelegate {
     @Published var isProcessingAPIRequest = false
     @Published var currentAPIRequestInfo: String?
     
+    // API statistics tracking
+    @Published var apiTranscriptionCount: Int = 0
+    @Published var totalAudioDuration: TimeInterval = 0
+    @Published var totalAPIProcessingTime: TimeInterval = 0
+    
     // Network handling - runs on background queues
     private var httpServer: WorkingHTTPServer?
     private let transcriptionProcessor: TranscriptionProcessor
@@ -686,15 +692,18 @@ class TranscriptionAPIServer: ObservableObject, WorkingHTTPServerDelegate {
     private var requestCount: Int = 0
     private var totalProcessingTime: TimeInterval = 0
     
-    init(whisperState: WhisperState) {
+    init(whisperState: WhisperState, modelContext: ModelContext) {
         self.whisperState = whisperState
-        self.transcriptionProcessor = TranscriptionProcessor(whisperState: whisperState)
+        self.transcriptionProcessor = TranscriptionProcessor(whisperState: whisperState, modelContext: modelContext)
         
         // Load saved settings
         self.port = UserDefaults.standard.integer(forKey: "APIServerPort")
         if self.port == 0 {
             self.port = 5000
         }
+        
+        // Load API statistics from database
+        loadAPIStatisticsFromDatabase(modelContext: modelContext)
     }
     
     func start() {
@@ -711,6 +720,7 @@ class TranscriptionAPIServer: ObservableObject, WorkingHTTPServerDelegate {
         
         // Connect processor to this API server for state tracking
         transcriptionProcessor.apiServer = self
+        transcriptionProcessor.apiHandler.apiServer = self
         
         // Create and configure HTTP server
         let allowNetworkAccess = UserDefaults.standard.bool(forKey: "APIServerAllowNetworkAccess")
@@ -873,6 +883,14 @@ class TranscriptionAPIServer: ObservableObject, WorkingHTTPServerDelegate {
     func httpServer(_ server: WorkingHTTPServer, didProcessRequest stats: RequestStats) {
         requestCount += 1
         totalProcessingTime += stats.processingTime
+        
+        // Track API transcription statistics
+        if stats.path == "/api/transcribe" && stats.success {
+            apiTranscriptionCount += 1
+            totalAPIProcessingTime += stats.processingTime
+            // Note: audio duration will be updated when the transcription is saved to database
+        }
+        
         logger.info("Processed \(stats.method) \(stats.path) - \(stats.success ? "SUCCESS" : "FAILED") in \(String(format: "%.2f", stats.processingTime * 1000))ms")
     }
     
@@ -952,5 +970,26 @@ class TranscriptionAPIServer: ObservableObject, WorkingHTTPServerDelegate {
     func setAPIProcessingState(isProcessing: Bool, info: String? = nil) {
         self.isProcessingAPIRequest = isProcessing
         self.currentAPIRequestInfo = info
+    }
+    
+    func updateAPITranscriptionStats(audioDuration: TimeInterval) {
+        self.totalAudioDuration += audioDuration
+    }
+    
+    private func loadAPIStatisticsFromDatabase(modelContext: ModelContext) {
+        do {
+            let descriptor = FetchDescriptor<Transcription>(
+                predicate: #Predicate<Transcription> { $0.source == "api" }
+            )
+            let apiTranscriptions = try modelContext.fetch(descriptor)
+            
+            self.apiTranscriptionCount = apiTranscriptions.count
+            self.totalAudioDuration = apiTranscriptions.reduce(0) { $0 + $1.duration }
+            self.totalAPIProcessingTime = apiTranscriptions.reduce(0) { $0 + ($1.transcriptionDuration ?? 0) }
+            
+            print("Loaded API stats: \(apiTranscriptionCount) transcriptions, \(totalAudioDuration)s audio, \(totalAPIProcessingTime)s processing")
+        } catch {
+            print("Failed to load API statistics: \(error)")
+        }
     }
 }

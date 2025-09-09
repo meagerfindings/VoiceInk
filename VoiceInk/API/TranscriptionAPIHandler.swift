@@ -1,5 +1,6 @@
 import Foundation
 import AVFoundation
+import SwiftData
 import os
 
 /// Handles API transcription requests using VoiceInk's existing transcription pipeline
@@ -7,6 +8,8 @@ class TranscriptionAPIHandler {
     private let logger = Logger(subsystem: "com.voiceink.api", category: "APIHandler")
     let whisperState: WhisperState  // Made internal for health check access
     private let audioProcessor = AudioProcessor()
+    private let modelContext: ModelContext
+    weak var apiServer: TranscriptionAPIServer?
     
     // Transcription services
     private var localTranscriptionService: LocalTranscriptionService?
@@ -14,11 +17,12 @@ class TranscriptionAPIHandler {
     private lazy var nativeAppleTranscriptionService = NativeAppleTranscriptionService()
     private var parakeetTranscriptionService: ParakeetTranscriptionService?
     
-    init(whisperState: WhisperState) {
+    init(whisperState: WhisperState, modelContext: ModelContext) {
         self.whisperState = whisperState
+        self.modelContext = modelContext
     }
     
-    func transcribe(audioData: Data) async throws -> Data {
+    func transcribe(audioData: Data, filename: String? = nil) async throws -> Data {
         let startTime = Date()
         let fileSizeMB = Double(audioData.count) / 1024 / 1024
         logger.info("Starting transcription for \(String(format: "%.1f", fileSizeMB))MB file")
@@ -152,6 +156,31 @@ class TranscriptionAPIHandler {
             } catch {
                 logger.warning("Enhancement failed: \(error.localizedDescription)")
             }
+        }
+        
+        // Save transcription to database
+        let transcription = Transcription(
+            text: text,
+            duration: duration,
+            enhancedText: enhancedText,
+            transcriptionModelName: currentModel.displayName,
+            aiEnhancementModelName: enhancedText != nil ? "AI Enhancement" : nil,
+            transcriptionDuration: transcriptionDuration,
+            enhancementDuration: enhancementDuration > 0 ? enhancementDuration : nil,
+            source: "api",
+            filename: filename
+        )
+        
+        modelContext.insert(transcription)
+        
+        do {
+            try modelContext.save()
+            logger.info("API transcription saved to database")
+            
+            // Update API server statistics
+            await apiServer?.updateAPITranscriptionStats(audioDuration: duration)
+        } catch {
+            logger.error("Failed to save API transcription to database: \(error)")
         }
         
         // Prepare response

@@ -74,6 +74,63 @@ struct SettingsView: View {
                     subtitle: "Additional shortcuts for VoiceInk"
                 ) {
                     VStack(alignment: .leading, spacing: 18) {
+                        // Paste Last Transcript (Original)
+                        HStack(spacing: 12) {
+                            Text("Paste Last Transcript(Original)")
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundColor(.secondary)
+                            
+                            KeyboardShortcuts.Recorder(for: .pasteLastTranscription)
+                                .controlSize(.small)
+                            
+                            InfoTip(
+                                title: "Paste Last Transcript(Original)",
+                                message: "Shortcut for pasting the most recent transcription."
+                            )
+                            
+                            Spacer()
+                        }
+
+                        // Paste Last Transcript (Enhanced)
+                        HStack(spacing: 12) {
+                            Text("Paste Last Transcript(Enhanced)")
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundColor(.secondary)
+                            
+                            KeyboardShortcuts.Recorder(for: .pasteLastEnhancement)
+                                .controlSize(.small)
+                            
+                            InfoTip(
+                                title: "Paste Last Transcript(Enhanced)",
+                                message: "Shortcut for pasting the most recent transcript(enhanced). If no enhancement exists, nothing is pasted. If the enhancement failed, the error message is pasted."
+                            )
+                            
+                            Spacer()
+                        }
+
+                        
+
+                        // Retry Last Transcription
+                        HStack(spacing: 12) {
+                            Text("Retry Last Transcription")
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundColor(.secondary)
+
+                            KeyboardShortcuts.Recorder(for: .retryLastTranscription)
+                                .controlSize(.small)
+
+                            InfoTip(
+                                title: "Retry Last Transcription",
+                                message: "Re-transcribe the last recorded audio using the current model and copy the result."
+                            )
+
+                            Spacer()
+                        }
+
+                        Divider()
+
+                        
+                        
                         // Custom Cancel Shortcut
                         VStack(alignment: .leading, spacing: 12) {
                             HStack(spacing: 8) {
@@ -107,25 +164,6 @@ struct SettingsView: View {
                                 .padding(.leading, 16)
                                 .transition(.opacity.combined(with: .move(edge: .top)))
                             }
-                        }
-
-                        Divider()
-
-                                                // Paste Last Transcription
-                        HStack(spacing: 12) {
-                            Text("Paste Last Transcription")
-                                .font(.system(size: 13, weight: .medium))
-                                .foregroundColor(.secondary)
-                            
-                            KeyboardShortcuts.Recorder(for: .pasteLastTranscription)
-                                .controlSize(.small)
-                            
-                            InfoTip(
-                                title: "Paste Last Transcription",
-                                message: "Shortcut for pasting the most recent transcription at current cursor position."
-                            )
-                            
-                            Spacer()
                         }
 
                         Divider()

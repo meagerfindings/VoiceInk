@@ -22,10 +22,13 @@ struct TranscriptionCleanupView: View {
             filtered = allTranscriptions
         }
         
-        // Sort by duration descending to show longest first, then by timestamp descending
+        // Sort by transcription processing time descending, then by timestamp descending
         return filtered.sorted { first, second in
-            if first.duration != second.duration {
-                return first.duration > second.duration
+            let firstProcessingTime = first.transcriptionDuration ?? 0
+            let secondProcessingTime = second.transcriptionDuration ?? 0
+
+            if firstProcessingTime != secondProcessingTime {
+                return firstProcessingTime > secondProcessingTime
             }
             return first.timestamp > second.timestamp
         }
@@ -51,11 +54,10 @@ struct TranscriptionCleanupView: View {
                         .foregroundColor(.secondary)
                     
                     if !transcriptions.isEmpty {
-                        let maxDuration = transcriptions.max(by: { $0.duration < $1.duration })?.duration ?? 0
-                        let maxHours = maxDuration / 3600
-                        Text("Longest: \(String(format: "%.1f", maxHours)) hours")
+                        let maxProcessingTime = transcriptions.compactMap { $0.transcriptionDuration }.max() ?? 0
+                        Text("Longest processing: \(String(format: "%.1f", maxProcessingTime))s")
                             .font(.caption)
-                            .foregroundColor(maxHours > 1 ? .red : .secondary)
+                            .foregroundColor(maxProcessingTime > 30 ? .red : .secondary)
                     }
                 }
                 .padding(.bottom)
@@ -83,8 +85,9 @@ struct TranscriptionCleanupView: View {
                 }
             } message: {
                 if let transcription = selectedTranscription {
-                    let durationHours = transcription.duration / 3600
-                    Text("Are you sure you want to delete this \(String(format: "%.2f", durationHours)) hour transcription? This action cannot be undone.")
+                    let processingTime = transcription.transcriptionDuration ?? 0
+                    let audioMinutes = transcription.duration / 60
+                    Text("Are you sure you want to delete this transcription (processed in \(String(format: "%.1f", processingTime))s, \(String(format: "%.1f", audioMinutes)) min audio)? This action cannot be undone.")
                 }
             }
         }
@@ -108,8 +111,12 @@ struct TranscriptionRowView: View {
     let index: Int
     let onDelete: () -> Void
     
-    private var durationHours: Double {
-        transcription.duration / 3600
+    private var processingTimeSeconds: Double {
+        transcription.transcriptionDuration ?? 0
+    }
+
+    private var audioDurationMinutes: Double {
+        transcription.duration / 60
     }
     
     private var textPreview: String {
@@ -131,16 +138,28 @@ struct TranscriptionRowView: View {
                         .font(.caption)
                         .fontWeight(.medium)
                         .foregroundColor(.secondary)
-                    
-                    if durationHours >= 1 {
-                        Text("⚠️ \(String(format: "%.1f", durationHours)) hours")
-                            .font(.headline)
-                            .fontWeight(.bold)
-                            .foregroundColor(.red)
-                    } else {
-                        Text("\(String(format: "%.1f", durationHours * 60)) minutes")
-                            .font(.subheadline)
-                            .foregroundColor(.primary)
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack {
+                            if processingTimeSeconds > 30 {
+                                Text("⚠️ Processing: \(String(format: "%.1f", processingTimeSeconds))s")
+                                    .font(.headline)
+                                    .fontWeight(.bold)
+                                    .foregroundColor(.red)
+                            } else if processingTimeSeconds > 0 {
+                                Text("Processing: \(String(format: "%.1f", processingTimeSeconds))s")
+                                    .font(.subheadline)
+                                    .foregroundColor(.primary)
+                            } else {
+                                Text("Processing: N/A")
+                                    .font(.subheadline)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+
+                        Text("Audio: \(String(format: "%.1f", audioDurationMinutes)) min")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
                     }
                 }
                 
@@ -166,13 +185,11 @@ struct TranscriptionRowView: View {
             }
             
             Spacer()
-            
-            if durationHours > 1 {
-                Button("Delete", action: onDelete)
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .tint(.red)
-            }
+
+            Button("Delete", action: onDelete)
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .tint(processingTimeSeconds > 30 ? .red : .secondary)
         }
         .padding(.vertical, 4)
     }

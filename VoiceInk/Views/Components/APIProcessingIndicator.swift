@@ -2,6 +2,7 @@ import SwiftUI
 
 struct APIProcessingIndicator: View {
     let processingInfo: String
+    let onStop: (() -> Void)?
     @State private var animationRotation: Double = 0
     
     var body: some View {
@@ -28,6 +29,17 @@ struct APIProcessingIndicator: View {
             }
             
             Spacer()
+            
+            // Stop button (if callback provided)
+            if let onStop = onStop {
+                Button(action: onStop) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 20))
+                        .foregroundColor(.red)
+                }
+                .buttonStyle(PlainButtonStyle())
+                .help("Force stop stuck transcription")
+            }
             
             // Pulse indicator
             Circle()
@@ -56,9 +68,11 @@ struct APIProcessingIndicator: View {
 
 #Preview {
     VStack(spacing: 20) {
-        APIProcessingIndicator(processingInfo: "Processing 2.3 MB audio file...")
+        APIProcessingIndicator(processingInfo: "Processing 2.3 MB audio file...", onStop: nil)
         
-        APIProcessingIndicator(processingInfo: "Processing large audio file (15.7 MB)...")
+        APIProcessingIndicator(processingInfo: "Processing large audio file (15.7 MB)...", onStop: {
+            print("Stop button tapped")
+        })
     }
     .padding()
     .background(Color(.controlBackgroundColor))

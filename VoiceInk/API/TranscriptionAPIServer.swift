@@ -3,6 +3,49 @@ import Network
 import SwiftData
 import os
 
+// MARK: - Error Types
+
+enum APITranscriptionError: Error {
+    case timeout
+    case duplicateRequest
+    case processingFailed(String)
+    
+    var localizedDescription: String {
+        switch self {
+        case .timeout:
+            return "Transcription timed out after 8 minutes"
+        case .duplicateRequest:
+            return "Request already in progress"
+        case .processingFailed(let message):
+            return "Processing failed: \(message)"
+        }
+    }
+}
+
+struct TimeoutError: Error {
+    let duration: TimeInterval
+}
+
+// MARK: - Timeout Helper
+
+func withThrowingTimeout<T>(of duration: Duration, operation: @escaping () async throws -> T) async throws -> T {
+    try await withThrowingTaskGroup(of: T.self) { group in
+        group.addTask {
+            try await operation()
+        }
+        
+        group.addTask {
+            let seconds = Double(duration.components.seconds) + Double(duration.components.attoseconds) / 1_000_000_000_000_000_000
+            try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+            throw TimeoutError(duration: seconds)
+        }
+        
+        let result = try await group.next()!
+        group.cancelAll()
+        return result
+    }
+}
+
 // MARK: - Supporting Classes
 
 /* OLD NetworkManager implementation - replaced with WorkingHTTPServer
@@ -639,6 +682,22 @@ class TranscriptionProcessor {
         let fileSizeMB = Double(audioData.count) / 1024 / 1024
         let fileSizeInfo = String(format: "%.1f MB", fileSizeMB)
         
+        // Create request ID for deduplication (based on filename + size or data hash)
+        let requestId = if let filename = filename {
+            "\(filename)_\(audioData.count)"
+        } else {
+            "audio_\(audioData.count)_\(String(audioData.hashValue))"
+        }
+        
+        // Check for duplicate requests
+        if await apiServer?.isRequestActive(requestId) == true {
+            logger.warning("🔄 Duplicate request detected: \(requestId)")
+            throw APITranscriptionError.duplicateRequest
+        }
+        
+        // Add to active requests tracking
+        await apiServer?.addActiveRequest(requestId)
+        
         // Create processing info message with filename if available
         let processingInfo: String
         if let filename = filename {
@@ -650,15 +709,28 @@ class TranscriptionProcessor {
         // Set processing state
         await apiServer?.setAPIProcessingState(isProcessing: true, info: processingInfo)
         
-        defer {
-            // Clear processing state when done
-            Task {
-                await apiServer?.setAPIProcessingState(isProcessing: false, info: nil)
+        do {
+            // Use withThrowingTimeout for 8-minute timeout
+            let result = try await withThrowingTimeout(of: .seconds(480)) { [self] in
+                try await apiHandler.transcribe(audioData: audioData, filename: filename)
             }
+            
+            // Clear processing state and remove from active requests on success
+            await apiServer?.setAPIProcessingState(isProcessing: false, info: nil)
+            await apiServer?.removeActiveRequest(requestId)
+            return result
+        } catch {
+            // Clear processing state and remove from active requests on error
+            await apiServer?.setAPIProcessingState(isProcessing: false, info: nil)
+            await apiServer?.removeActiveRequest(requestId)
+            
+            if error is TimeoutError {
+                logger.error("⏰ Transcription timed out after 8 minutes for: \(filename ?? "unknown")")
+                throw APITranscriptionError.timeout
+            }
+            
+            throw error
         }
-        
-        // Use the existing TranscriptionAPIHandler which already handles MainActor access properly
-        return try await apiHandler.transcribe(audioData: audioData, filename: filename)
     }
 }
 
@@ -681,6 +753,9 @@ class TranscriptionAPIServer: ObservableObject, WorkingHTTPServerDelegate {
     @Published var apiTranscriptionCount: Int = 0
     @Published var totalAudioDuration: TimeInterval = 0
     @Published var totalAPIProcessingTime: TimeInterval = 0
+    
+    // Request deduplication tracking
+    private var activeRequests: Set<String> = Set()
     
     // Network handling - runs on background queues
     private var httpServer: WorkingHTTPServer?
@@ -970,6 +1045,28 @@ class TranscriptionAPIServer: ObservableObject, WorkingHTTPServerDelegate {
     func setAPIProcessingState(isProcessing: Bool, info: String? = nil) {
         self.isProcessingAPIRequest = isProcessing
         self.currentAPIRequestInfo = info
+    }
+    
+    func forceStopAPIProcessing() {
+        self.isProcessingAPIRequest = false
+        self.currentAPIRequestInfo = nil
+        // Clear all active requests on force stop
+        self.activeRequests.removeAll()
+        print("🛑 Force stopped stuck API transcription processing")
+    }
+    
+    func isRequestActive(_ requestId: String) -> Bool {
+        return activeRequests.contains(requestId)
+    }
+    
+    func addActiveRequest(_ requestId: String) {
+        activeRequests.insert(requestId)
+        logger.info("📝 Added active request: \(requestId) (total active: \(self.activeRequests.count))")
+    }
+    
+    func removeActiveRequest(_ requestId: String) {
+        activeRequests.remove(requestId)
+        logger.info("✅ Removed active request: \(requestId) (total active: \(self.activeRequests.count))")
     }
     
     func updateAPITranscriptionStats(audioDuration: TimeInterval) {

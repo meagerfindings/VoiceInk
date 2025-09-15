@@ -13,6 +13,10 @@ class WorkingHTTPServer {
     private var isRunning = false
     private let serverQueue = DispatchQueue(label: "working.http.server", qos: .userInitiated)
     
+    // Request deduplication
+    private var activeRequests: Set<String> = Set()
+    private let requestsQueue = DispatchQueue(label: "working.http.server.requests", qos: .userInitiated)
+    
     // Dependencies
     private let transcriptionProcessor: TranscriptionProcessor
     weak var delegate: WorkingHTTPServerDelegate?
@@ -21,6 +25,29 @@ class WorkingHTTPServer {
         self.port = port
         self.allowNetworkAccess = allowNetworkAccess
         self.transcriptionProcessor = transcriptionProcessor
+    }
+    
+    // MARK: - Request Deduplication
+    
+    private func generateRequestId(from data: Data, filename: String?) -> String {
+        let hasher = data.hashValue
+        return "\(filename ?? "unknown")_\(hasher)_\(data.count)"
+    }
+    
+    private func addActiveRequest(_ requestId: String) -> Bool {
+        return requestsQueue.sync {
+            if activeRequests.contains(requestId) {
+                return false
+            }
+            activeRequests.insert(requestId)
+            return true
+        }
+    }
+    
+    private func removeActiveRequest(_ requestId: String) {
+        requestsQueue.sync {
+            activeRequests.remove(requestId)
+        }
     }
     
     func start() throws {
@@ -381,10 +408,17 @@ class WorkingHTTPServer {
         
         logger.info("🎉 CONN-\(connectionId): File extracted successfully, size: \(fileData.count) bytes, filename: \(filename ?? "none")")
         
-        // Process transcription synchronously using async/await
-        let semaphore = DispatchSemaphore(value: 0)
+        // Check for duplicate request
+        let requestId = generateRequestId(from: fileData, filename: filename)
+        guard addActiveRequest(requestId) else {
+            logger.warning("⚠️ CONN-\(connectionId): Duplicate request detected for \(filename ?? "unknown") (\(fileData.count) bytes)")
+            return HTTPResponse.error(409, "Request already in progress")
+        }
+        
+        // Process transcription using RunLoop to maintain synchronous behavior for HTTP response
         var transcriptionResult: Data?
         var transcriptionError: Error?
+        var isCompleted = false
         
         logger.debug("🔄 CONN-\(connectionId): Starting transcription task...")
         
@@ -397,12 +431,18 @@ class WorkingHTTPServer {
                 logger.error("🔴 CONN-\(connectionId): Transcription error: \(error)")
                 transcriptionError = error
             }
-            semaphore.signal()
+            isCompleted = true
         }
         
+        // Use RunLoop to wait for completion without blocking threads
         logger.debug("⏳ CONN-\(connectionId): Waiting for transcription to complete...")
-        semaphore.wait()
+        while !isCompleted {
+            RunLoop.current.run(mode: .default, before: Date(timeIntervalSinceNow: 0.1))
+        }
         logger.debug("✅ CONN-\(connectionId): Transcription wait completed")
+        
+        // Clean up request tracking
+        removeActiveRequest(requestId)
         
         if let error = transcriptionError {
             logger.error("🔴 CONN-\(connectionId): Transcription failed: \(error)")

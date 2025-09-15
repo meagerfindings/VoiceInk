@@ -21,9 +21,14 @@ struct MetricsView: View {
         VStack(spacing: 0) {
             // API Processing Indicator
             if apiServer.isProcessingAPIRequest, let info = apiServer.currentAPIRequestInfo {
-                APIProcessingIndicator(processingInfo: info)
-                    .padding(.horizontal, 20)
-                    .padding(.top, 16)
+                APIProcessingIndicator(
+                    processingInfo: info,
+                    onStop: {
+                        apiServer.forceStopAPIProcessing()
+                    }
+                )
+                .padding(.horizontal, 20)
+                .padding(.top, 16)
                     .transition(.asymmetric(
                         insertion: .move(edge: .top).combined(with: .opacity),
                         removal: .move(edge: .top).combined(with: .opacity)

@@ -30,17 +30,33 @@ struct TimeoutError: Error {
 
 func withThrowingTimeout<T>(of duration: Duration, operation: @escaping () async throws -> T) async throws -> T {
     try await withThrowingTaskGroup(of: T.self) { group in
+        // Add the actual operation task
         group.addTask {
-            try await operation()
+            do {
+                return try await operation()
+            } catch {
+                // Re-throw the error but ensure we can distinguish cancellation
+                if Task.isCancelled {
+                    throw CancellationError()
+                }
+                throw error
+            }
         }
-        
+
+        // Add the timeout task
         group.addTask {
             let seconds = Double(duration.components.seconds) + Double(duration.components.attoseconds) / 1_000_000_000_000_000_000
             try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
             throw TimeoutError(duration: seconds)
         }
-        
-        let result = try await group.next()!
+
+        // Wait for first task to complete
+        guard let result = try await group.next() else {
+            group.cancelAll()
+            throw TimeoutError(duration: Double(duration.components.seconds))
+        }
+
+        // Cancel all remaining tasks (timeout or operation, whichever didn't complete)
         group.cancelAll()
         return result
     }

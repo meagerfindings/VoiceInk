@@ -2,6 +2,34 @@ import Foundation
 import Darwin
 import os
 
+// MARK: - Timeout Helper for WorkingHTTPServer
+
+struct WorkingHTTPTimeoutError: Error {
+    let duration: TimeInterval
+}
+
+func withTimeout<T>(seconds: TimeInterval, operation: @escaping () async throws -> T) async throws -> T {
+    return try await withThrowingTaskGroup(of: T.self) { group in
+        // Add the actual operation
+        group.addTask {
+            try await operation()
+        }
+
+        // Add the timeout task
+        group.addTask {
+            try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+            throw WorkingHTTPTimeoutError(duration: seconds)
+        }
+
+        // Return the first result and cancel the rest
+        guard let result = try await group.next() else {
+            throw WorkingHTTPTimeoutError(duration: seconds)
+        }
+        group.cancelAll()
+        return result
+    }
+}
+
 /// Working HTTP Server implementation using BSD sockets
 /// Replaces broken NWConnection that hangs on receive() callbacks
 class WorkingHTTPServer {
@@ -49,6 +77,16 @@ class WorkingHTTPServer {
             activeRequests.remove(requestId)
         }
     }
+
+    private func clearActiveRequests() {
+        requestsQueue.sync {
+            let count = activeRequests.count
+            activeRequests.removeAll()
+            if count > 0 {
+                logger.info("🧹 Cleared \(count) stale active requests from previous session")
+            }
+        }
+    }
     
     func start() throws {
         guard !isRunning else { return }
@@ -88,8 +126,12 @@ class WorkingHTTPServer {
         }
         
         isRunning = true
+
+        // Clear any stale requests from previous sessions
+        clearActiveRequests()
+
         logger.info("✅ Working HTTP Server listening on port \(self.port)")
-        
+
         // Start accepting connections on background queue
         serverQueue.async { [weak self] in
             self?.acceptConnections()
@@ -138,15 +180,14 @@ class WorkingHTTPServer {
             
             logger.debug("🔗 New client connection accepted: socket \(clientSocket)")
             
-            // Handle connection on separate queue
-            let connectionQueue = DispatchQueue(label: "connection.\(clientSocket)", qos: .userInitiated)
-            connectionQueue.async { [weak self] in
-                self?.handleConnection(clientSocket: clientSocket)
+            // Handle connection asynchronously
+            Task { [weak self] in
+                await self?.handleConnection(clientSocket: clientSocket)
             }
         }
     }
     
-    private func handleConnection(clientSocket: Int32) {
+    private func handleConnection(clientSocket: Int32) async {
         defer {
             logger.debug("🔚 Closing socket \(clientSocket)")
             close(clientSocket)
@@ -168,7 +209,7 @@ class WorkingHTTPServer {
         // Route and process request
         let response: HTTPResponse
         do {
-            response = try routeRequest(request, connectionId: connectionId)
+            response = try await routeRequest(request, connectionId: connectionId)
         } catch {
             logger.error("🔴 CONN-\(connectionId): Request processing failed: \(error)")
             response = HTTPResponse.error(500, "Internal Server Error")
@@ -315,7 +356,7 @@ class WorkingHTTPServer {
         )
     }
     
-    private func routeRequest(_ request: HTTPRequest, connectionId: String) throws -> HTTPResponse {
+    private func routeRequest(_ request: HTTPRequest, connectionId: String) async throws -> HTTPResponse {
         switch (request.method, request.path) {
         case ("GET", "/health"):
             return handleHealthRequest(connectionId: connectionId)
@@ -327,7 +368,7 @@ class WorkingHTTPServer {
             return handleEchoRequest(request, connectionId: connectionId)
             
         case ("POST", "/api/transcribe"):
-            return try handleTranscriptionRequest(request, connectionId: connectionId)
+            return try await handleTranscriptionRequest(request, connectionId: connectionId)
             
         case ("OPTIONS", _):
             return HTTPResponse.options()
@@ -388,7 +429,7 @@ class WorkingHTTPServer {
         return HTTPResponse.success(data: jsonData, contentType: "application/json")
     }
     
-    private func handleTranscriptionRequest(_ request: HTTPRequest, connectionId: String) throws -> HTTPResponse {
+    private func handleTranscriptionRequest(_ request: HTTPRequest, connectionId: String) async throws -> HTTPResponse {
         logger.info("🎤 CONN-\(connectionId): Processing transcription request, body size: \(request.body.count)")
         
         guard let boundary = extractBoundary(from: request.headers["content-type"]) else {
@@ -415,45 +456,31 @@ class WorkingHTTPServer {
             return HTTPResponse.error(409, "Request already in progress")
         }
         
-        // Process transcription using RunLoop to maintain synchronous behavior for HTTP response
-        var transcriptionResult: Data?
-        var transcriptionError: Error?
-        var isCompleted = false
-        
-        logger.debug("🔄 CONN-\(connectionId): Starting transcription task...")
-        
-        Task {
-            do {
-                logger.debug("🔄 CONN-\(connectionId): Calling transcriptionProcessor.transcribe...")
-                transcriptionResult = try await transcriptionProcessor.transcribe(audioData: fileData, filename: filename)
-                logger.debug("✅ CONN-\(connectionId): Transcription completed, result size: \(transcriptionResult?.count ?? 0) bytes")
-            } catch {
-                logger.error("🔴 CONN-\(connectionId): Transcription error: \(error)")
-                transcriptionError = error
+        // Process transcription with proper async/await and timeout
+        logger.debug("🔄 CONN-\(connectionId): Starting transcription with timeout...")
+
+        let transcriptionResult: Data
+        do {
+            transcriptionResult = try await withTimeout(seconds: 480) { [self] in // 8 minutes
+                try await transcriptionProcessor.transcribe(audioData: fileData, filename: filename)
             }
-            isCompleted = true
+            logger.debug("✅ CONN-\(connectionId): Transcription completed, result size: \(transcriptionResult.count) bytes")
+        } catch {
+            logger.error("🔴 CONN-\(connectionId): Transcription failed: \(error)")
+            // Clean up request tracking on error
+            removeActiveRequest(requestId)
+
+            if error is WorkingHTTPTimeoutError {
+                return HTTPResponse.error(504, "Transcription timeout: Request took longer than 8 minutes")
+            } else {
+                return HTTPResponse.error(500, "Transcription failed: \(error.localizedDescription)")
+            }
         }
-        
-        // Use RunLoop to wait for completion without blocking threads
-        logger.debug("⏳ CONN-\(connectionId): Waiting for transcription to complete...")
-        while !isCompleted {
-            RunLoop.current.run(mode: .default, before: Date(timeIntervalSinceNow: 0.1))
-        }
-        logger.debug("✅ CONN-\(connectionId): Transcription wait completed")
         
         // Clean up request tracking
         removeActiveRequest(requestId)
-        
-        if let error = transcriptionError {
-            logger.error("🔴 CONN-\(connectionId): Transcription failed: \(error)")
-            return HTTPResponse.error(500, "Transcription failed: \(error.localizedDescription)")
-        }
-        
-        guard let result = transcriptionResult else {
-            return HTTPResponse.error(500, "Transcription returned no data")
-        }
-        
-        return HTTPResponse.success(data: result, contentType: "application/json")
+
+        return HTTPResponse.success(data: transcriptionResult, contentType: "application/json")
     }
     
     private func sendHTTPResponse(_ response: HTTPResponse, to socket: Int32, connectionId: String) {

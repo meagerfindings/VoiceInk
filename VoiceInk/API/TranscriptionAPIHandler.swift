@@ -55,9 +55,13 @@ class TranscriptionAPIHandler {
         let tempURL = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString)
             .appendingPathExtension(audioFormat.rawValue)
-        
+
+        logger.debug("💾 Saving \(String(format: "%.1f", fileSizeMB))MB audio file...")
+        let writeStart = Date()
         try audioData.write(to: tempURL)
-        
+        let writeTime = Date().timeIntervalSince(writeStart)
+        logger.debug("💾 Audio file saved in \(String(format: "%.3f", writeTime))s: \(tempURL.lastPathComponent)")
+
         defer {
             // Clean up temporary file
             try? FileManager.default.removeItem(at: tempURL)
@@ -116,25 +120,35 @@ class TranscriptionAPIHandler {
             try? FileManager.default.removeItem(at: processedURL)
         }
         
-        // Transcribe using appropriate service
+        // Transcribe using appropriate service with detailed logging
         let transcriptionStart = Date()
         var text: String
-        
-        logger.info("Starting transcription with \(currentModel.provider.rawValue) provider...")
-        
+
+        logger.info("🔄 Starting transcription with \(currentModel.provider.rawValue) provider for \(String(format: "%.1f", fileSizeMB))MB file...")
+
+        // Add cancellation check before transcription
+        try Task.checkCancellation()
+
         switch currentModel.provider {
         case .local:
+            logger.debug("🏠 Using local transcription service...")
             text = try await localTranscriptionService!.transcribe(audioURL: processedURL, model: currentModel)
         case .parakeet:
+            logger.debug("🦜 Using Parakeet transcription service...")
             text = try await parakeetTranscriptionService!.transcribe(audioURL: processedURL, model: currentModel)
         case .nativeApple:
+            logger.debug("🍎 Using Apple native transcription service...")
             text = try await nativeAppleTranscriptionService.transcribe(audioURL: processedURL, model: currentModel)
         default: // Cloud models
+            logger.debug("☁️ Using cloud transcription service...")
             text = try await cloudTranscriptionService.transcribe(audioURL: processedURL, model: currentModel)
         }
-        
+
         let transcriptionDuration = Date().timeIntervalSince(transcriptionStart)
-        logger.info("Transcription completed in \(String(format: "%.1f", transcriptionDuration))s")
+        logger.info("✅ Transcription completed in \(String(format: "%.1f", transcriptionDuration))s, result length: \(text.count) chars")
+
+        // Add cancellation check after transcription
+        try Task.checkCancellation()
         text = text.trimmingCharacters(in: .whitespacesAndNewlines)
         
         // Apply word replacements if enabled

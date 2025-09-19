@@ -139,14 +139,7 @@ class ParakeetTranscriptionService: TranscriptionService {
         }
         
         var text = result.text
-        
-        if UserDefaults.standard.object(forKey: "IsTextFormattingEnabled") as? Bool ?? true {
-            text = WhisperTextFormatter.format(text)
-        }
-        
-        // Apply hallucination and filler word filtering
-        text = WhisperHallucinationFilter.filter(text)
-        
+
         return text
     }
 

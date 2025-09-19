@@ -268,12 +268,17 @@ class WhisperState: NSObject, ObservableObject {
 
             let transcriptionStart = Date()
             var text = try await transcriptionService.transcribe(audioURL: url, model: model)
+            text = WhisperHallucinationFilter.filter(text)
             let transcriptionDuration = Date().timeIntervalSince(transcriptionStart)
             
             if await checkCancellationAndCleanup() { return }
             
             text = text.trimmingCharacters(in: .whitespacesAndNewlines)
-            
+
+            if UserDefaults.standard.object(forKey: "IsTextFormattingEnabled") as? Bool ?? true {
+                text = WhisperTextFormatter.format(text)
+            }
+
             if UserDefaults.standard.bool(forKey: "IsWordReplacementEnabled") {
                 text = WordReplacementService.shared.applyReplacements(to: text)
             }
@@ -298,17 +303,19 @@ class WhisperState: NSObject, ObservableObject {
                     await MainActor.run { self.recordingState = .enhancing }
                     let textForAI = promptDetectionResult?.processedText ?? text
                     let (enhancedText, enhancementDuration, promptName) = try await enhancementService.enhance(textForAI)
-                    let newTranscription = Transcription(
-                        text: originalText,
-                        duration: actualDuration,
-                        enhancedText: enhancedText,
-                        audioFileURL: url.absoluteString,
-                        transcriptionModelName: model.displayName,
-                        aiEnhancementModelName: enhancementService.getAIService()?.currentModel,
-                        promptName: promptName,
-                        transcriptionDuration: transcriptionDuration,
-                        enhancementDuration: enhancementDuration
-                    )
+        let newTranscription = Transcription(
+            text: originalText,
+            duration: actualDuration,
+            enhancedText: enhancedText,
+            audioFileURL: url.absoluteString,
+            transcriptionModelName: model.displayName,
+            aiEnhancementModelName: enhancementService.getAIService()?.currentModel,
+            promptName: promptName,
+            transcriptionDuration: transcriptionDuration,
+            enhancementDuration: enhancementDuration,
+            aiRequestSystemMessage: enhancementService.lastSystemMessageSent,
+            aiRequestUserMessage: enhancementService.lastUserMessageSent
+        )
                     modelContext.insert(newTranscription)
                     try? modelContext.save()
                     NotificationCenter.default.post(name: .transcriptionCreated, object: newTranscription)

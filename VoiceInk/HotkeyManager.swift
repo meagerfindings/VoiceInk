@@ -59,7 +59,7 @@ class HotkeyManager: ObservableObject {
     // Key state tracking
     private var currentKeyState = false
     private var keyPressStartTime: Date?
-    private let briefPressThreshold = 0.8
+    private let briefPressThreshold = 1.7
     private var isHandsFreeMode = false
     
     // Debounce for Fn key
@@ -147,6 +147,13 @@ class HotkeyManager: ObservableObject {
             guard let self = self else { return }
             Task { @MainActor in
                 LastTranscriptionService.pasteLastTranscription(from: self.whisperState.modelContext)
+            }
+        }
+
+        KeyboardShortcuts.onKeyUp(for: .pasteLastEnhancement) { [weak self] in
+            guard let self = self else { return }
+            Task { @MainActor in
+                LastTranscriptionService.pasteLastEnhancement(from: self.whisperState.modelContext)
             }
         }
 

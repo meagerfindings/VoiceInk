@@ -60,8 +60,13 @@ class AudioTranscriptionService: ObservableObject {
             }
             
             let transcriptionDuration = Date().timeIntervalSince(transcriptionStart)
+            text = WhisperHallucinationFilter.filter(text)
             text = text.trimmingCharacters(in: .whitespacesAndNewlines)
-            
+
+            if UserDefaults.standard.object(forKey: "IsTextFormattingEnabled") as? Bool ?? true {
+                text = WhisperTextFormatter.format(text)
+            }
+
             // Apply word replacements if enabled
             if UserDefaults.standard.bool(forKey: "IsWordReplacementEnabled") {
                 text = WordReplacementService.shared.applyReplacements(to: text)
@@ -95,8 +100,8 @@ class AudioTranscriptionService: ObservableObject {
                enhancementService.isEnhancementEnabled,
                enhancementService.isConfigured {
                 do {
+                    // inside the enhancement success path where newTranscription is created
                     let (enhancedText, enhancementDuration, promptName) = try await enhancementService.enhance(text)
-                    
                     let newTranscription = Transcription(
                         text: text,
                         duration: duration,
@@ -106,7 +111,9 @@ class AudioTranscriptionService: ObservableObject {
                         aiEnhancementModelName: enhancementService.getAIService()?.currentModel,
                         promptName: promptName,
                         transcriptionDuration: transcriptionDuration,
-                        enhancementDuration: enhancementDuration
+                        enhancementDuration: enhancementDuration,
+                        aiRequestSystemMessage: enhancementService.lastSystemMessageSent,
+                        aiRequestUserMessage: enhancementService.lastUserMessageSent
                     )
                     modelContext.insert(newTranscription)
                     do {

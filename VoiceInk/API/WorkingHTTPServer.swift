@@ -164,22 +164,36 @@ class WorkingHTTPServer {
         while isRunning {
             var clientAddr = sockaddr_in()
             var clientAddrLen = socklen_t(MemoryLayout<sockaddr_in>.size)
-            
+
             let clientSocket = withUnsafeMutablePointer(to: &clientAddr) {
                 $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
                     accept(serverSocket, $0, &clientAddrLen)
                 }
             }
-            
+
             guard clientSocket != -1 else {
+                let errorCode = errno
                 if isRunning {
-                    logger.error("Failed to accept client connection")
+                    if errorCode == EINTR {
+                        // Interrupted by signal, just continue
+                        continue
+                    } else if errorCode == EAGAIN || errorCode == EWOULDBLOCK {
+                        // Non-blocking socket would block, add delay
+                        logger.debug("No pending connections, sleeping briefly")
+                        Thread.sleep(forTimeInterval: 0.1)
+                        continue
+                    } else {
+                        logger.error("Failed to accept client connection: errno=\(errorCode)")
+                        // Add delay on any other error to prevent busy loop
+                        Thread.sleep(forTimeInterval: 0.5)
+                        continue
+                    }
                 }
-                continue
+                break
             }
-            
+
             logger.debug("🔗 New client connection accepted: socket \(clientSocket)")
-            
+
             // Handle connection asynchronously
             Task { [weak self] in
                 await self?.handleConnection(clientSocket: clientSocket)

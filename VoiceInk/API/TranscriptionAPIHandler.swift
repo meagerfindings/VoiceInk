@@ -3,6 +3,33 @@ import AVFoundation
 import SwiftData
 import os
 
+// Timeout helper for transcription operations
+struct TranscriptionTimeoutError: Error {
+    let duration: TimeInterval
+}
+
+func withTranscriptionTimeout<T>(seconds: TimeInterval, operation: @escaping () async throws -> T) async throws -> T {
+    return try await withThrowingTaskGroup(of: T.self) { group in
+        // Add the actual operation
+        group.addTask {
+            try await operation()
+        }
+
+        // Add the timeout task
+        group.addTask {
+            try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+            throw TranscriptionTimeoutError(duration: seconds)
+        }
+
+        // Return the first result and cancel the rest
+        guard let result = try await group.next() else {
+            throw TranscriptionTimeoutError(duration: seconds)
+        }
+        group.cancelAll()
+        return result
+    }
+}
+
 /// Handles API transcription requests using VoiceInk's existing transcription pipeline
 class TranscriptionAPIHandler {
     private let logger = Logger(subsystem: "com.voiceink.api", category: "APIHandler")
@@ -26,6 +53,21 @@ class TranscriptionAPIHandler {
         let startTime = Date()
         let fileSizeMB = Double(audioData.count) / 1024 / 1024
         logger.info("Starting transcription for \(String(format: "%.1f", fileSizeMB))MB file")
+
+        // Add file size limit for API transcriptions (50MB max to prevent infinite loops)
+        if fileSizeMB > 50 {
+            logger.error("File size (\(String(format: "%.1f", fileSizeMB))MB) exceeds 50MB limit for API transcriptions")
+            let errorResponse = TranscriptionErrorResponse(
+                success: false,
+                error: ErrorDetails(
+                    code: "FILE_TOO_LARGE",
+                    message: "File size (\(String(format: "%.1f", fileSizeMB))MB) exceeds the 50MB limit for API transcriptions. Please use smaller audio files."
+                )
+            )
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = .prettyPrinted
+            return try encoder.encode(errorResponse)
+        }
         
         // Check if a model is loaded first
         guard await whisperState.currentTranscriptionModel != nil else {
@@ -45,6 +87,32 @@ class TranscriptionAPIHandler {
         // Detect audio format from data
         let audioFormat = AudioFormatDetector.detectFormat(from: audioData)
         logger.info("Detected audio format: \(audioFormat.rawValue)")
+
+        // Basic audio validation - check for suspicious patterns
+        if audioData.isEmpty {
+            logger.error("Empty audio data received")
+            let errorResponse = TranscriptionErrorResponse(
+                success: false,
+                error: ErrorDetails(
+                    code: "INVALID_AUDIO",
+                    message: "Audio data is empty"
+                )
+            )
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = .prettyPrinted
+            return try encoder.encode(errorResponse)
+        }
+
+        // Check for potentially problematic MP3 files with unusual patterns
+        if audioFormat == .mp3 {
+            let firstBytes = Array(audioData.prefix(16))
+            logger.debug("MP3 header bytes: \(firstBytes.map { String(format: "%02X", $0) }.joined(separator: " "))")
+
+            // Check for MP3s that start with multiple consecutive null bytes (often corrupted)
+            if firstBytes.prefix(8).allSatisfy({ $0 == 0 }) {
+                logger.warning("⚠️ MP3 file starts with null bytes - potentially corrupted")
+            }
+        }
         
         // For large files, log progress
         if fileSizeMB > 10 {
@@ -107,7 +175,22 @@ class TranscriptionAPIHandler {
         // Get audio duration
         let audioAsset = AVURLAsset(url: tempURL)
         let duration = CMTimeGetSeconds(try await audioAsset.load(.duration))
-        logger.info("Audio duration: \(String(format: "%.1f", duration)) seconds")
+        logger.info("Audio duration: \(String(format: "%.1f", duration)) seconds (\(String(format: "%.1f", duration / 60)) minutes)")
+
+        // Add duration limit for API transcriptions (30 minutes max to prevent infinite loops)
+        if duration > 1800 { // 30 minutes
+            logger.error("Audio duration (\(String(format: "%.1f", duration / 60)) minutes) exceeds 30-minute limit for API transcriptions")
+            let errorResponse = TranscriptionErrorResponse(
+                success: false,
+                error: ErrorDetails(
+                    code: "AUDIO_TOO_LONG",
+                    message: "Audio duration (\(String(format: "%.1f", duration / 60)) minutes) exceeds the 30-minute limit for API transcriptions. Please use shorter audio files."
+                )
+            )
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = .prettyPrinted
+            return try encoder.encode(errorResponse)
+        }
         
         // Create processed audio file
         let processedURL = FileManager.default.temporaryDirectory
@@ -132,7 +215,19 @@ class TranscriptionAPIHandler {
         switch currentModel.provider {
         case .local:
             logger.debug("🏠 Using local transcription service...")
-            text = try await localTranscriptionService!.transcribe(audioURL: processedURL, model: currentModel)
+            // Add aggressive timeout for local transcription to prevent infinite loops
+            // Expected time: ~1-2 minutes for typical files, 5 minutes max
+            let maxTranscriptionTime: TimeInterval = max(300, duration * 4) // 5 minutes or 4x audio duration, whichever is higher
+            logger.info("🕒 Setting local transcription timeout to \(String(format: "%.1f", maxTranscriptionTime)) seconds")
+
+            do {
+                text = try await withTranscriptionTimeout(seconds: maxTranscriptionTime) { [self] in
+                    try await localTranscriptionService!.transcribe(audioURL: processedURL, model: currentModel)
+                }
+            } catch is TranscriptionTimeoutError {
+                logger.error("🔴 Local transcription timed out after \(String(format: "%.1f", maxTranscriptionTime)) seconds")
+                throw APITranscriptionError.timeout
+            }
         case .parakeet:
             logger.debug("🦜 Using Parakeet transcription service...")
             text = try await parakeetTranscriptionService!.transcribe(audioURL: processedURL, model: currentModel)
@@ -159,7 +254,9 @@ class TranscriptionAPIHandler {
         // Handle enhancement if enabled
         var enhancedText: String?
         var enhancementDuration: TimeInterval = 0
-        
+        var aiRequestSystemMessage: String?
+        var aiRequestUserMessage: String?
+
         if let enhancementService = await whisperState.enhancementService,
            await enhancementService.isEnhancementEnabled,
            await enhancementService.isConfigured {
@@ -167,6 +264,10 @@ class TranscriptionAPIHandler {
                 let enhancementStart = Date()
                 enhancedText = try await enhancementService.enhance(text).0
                 enhancementDuration = Date().timeIntervalSince(enhancementStart)
+
+                // Capture AI request messages for history display
+                aiRequestSystemMessage = enhancementService.lastSystemMessageSent
+                aiRequestUserMessage = enhancementService.lastUserMessageSent
             } catch {
                 logger.warning("Enhancement failed: \(error.localizedDescription)")
             }
@@ -182,7 +283,9 @@ class TranscriptionAPIHandler {
             transcriptionDuration: transcriptionDuration,
             enhancementDuration: enhancementDuration > 0 ? enhancementDuration : nil,
             source: "api",
-            filename: filename
+            filename: filename,
+            aiRequestSystemMessage: aiRequestSystemMessage,
+            aiRequestUserMessage: aiRequestUserMessage
         )
         
         modelContext.insert(transcription)

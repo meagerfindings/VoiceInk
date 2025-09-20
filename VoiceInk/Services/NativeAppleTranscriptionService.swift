@@ -64,7 +64,7 @@ class NativeAppleTranscriptionService: TranscriptionService {
         
         // Feature gated: SpeechAnalyzer/SpeechTranscriber are future APIs.
         // Enable by defining ENABLE_NATIVE_SPEECH_ANALYZER in build settings once building against macOS 26+ SDKs.
-        #if canImport(Speech) && ENABLE_NATIVE_SPEECH_ANALYZER
+        #if false // Disabled - requires macOS 26 SDK
         logger.notice("Starting Apple native transcription with SpeechAnalyzer.")
         
         let audioFile = try AVAudioFile(forReading: audioURL)
@@ -149,7 +149,7 @@ class NativeAppleTranscriptionService: TranscriptionService {
     // This avoids referencing an unavailable SDK symbol while keeping the method shape for later adoption.
     @available(macOS 26, *)
     private func ensureModelIsAvailable(for transcriber: Any, locale: Locale) async throws {
-        #if canImport(Speech) && ENABLE_NATIVE_SPEECH_ANALYZER
+        #if false // Disabled - requires macOS 26 SDK
         let installedLocales = await SpeechTranscriber.installedLocales
         let isInstalled = installedLocales.map({ $0.identifier(.bcp47) }).contains(locale.identifier(.bcp47))
 

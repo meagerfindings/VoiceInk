@@ -54,14 +54,14 @@ class TranscriptionAPIHandler {
         let fileSizeMB = Double(audioData.count) / 1024 / 1024
         logger.info("Starting transcription for \(String(format: "%.1f", fileSizeMB))MB file")
 
-        // Add file size limit for API transcriptions (50MB max to prevent infinite loops)
-        if fileSizeMB > 50 {
-            logger.error("File size (\(String(format: "%.1f", fileSizeMB))MB) exceeds 50MB limit for API transcriptions")
+        // Add file size limit for API transcriptions (100MB max to prevent infinite loops)
+        if fileSizeMB > 100 {
+            logger.error("File size (\(String(format: "%.1f", fileSizeMB))MB) exceeds 100MB limit for API transcriptions")
             let errorResponse = TranscriptionErrorResponse(
                 success: false,
                 error: ErrorDetails(
                     code: "FILE_TOO_LARGE",
-                    message: "File size (\(String(format: "%.1f", fileSizeMB))MB) exceeds the 50MB limit for API transcriptions. Please use smaller audio files."
+                    message: "File size (\(String(format: "%.1f", fileSizeMB))MB) exceeds the 100MB limit for API transcriptions. Please use smaller audio files."
                 )
             )
             let encoder = JSONEncoder()
@@ -114,11 +114,14 @@ class TranscriptionAPIHandler {
             }
         }
         
-        // For large files, log progress
+        // For large files, log progress and warn about potential delays
         if fileSizeMB > 10 {
-            logger.notice("Processing large audio file (\(String(format: "%.1f", fileSizeMB))MB)")
+            logger.notice("Processing large audio file (\(String(format: "%.1f", fileSizeMB))MB) - this may take several minutes")
         }
-        
+        if fileSizeMB > 50 {
+            logger.warning("⚠️ Very large audio file (\(String(format: "%.1f", fileSizeMB))MB) - processing may take 10+ minutes")
+        }
+
         // Save audio data to temporary file with correct extension
         let tempURL = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString)
@@ -216,27 +219,54 @@ class TranscriptionAPIHandler {
         case .local:
             logger.debug("🏠 Using local transcription service...")
             // Add aggressive timeout for local transcription to prevent infinite loops
-            // Expected time: ~1-2 minutes for typical files, 5 minutes max
-            let maxTranscriptionTime: TimeInterval = max(300, duration * 4) // 5 minutes or 4x audio duration, whichever is higher
-            logger.info("🕒 Setting local transcription timeout to \(String(format: "%.1f", maxTranscriptionTime)) seconds")
+            // Expected time: ~1-2 minutes for typical files, but allow more time for long/complex files
+            let maxTranscriptionTime: TimeInterval = max(600, duration * 6) // 10 minutes or 6x audio duration, whichever is higher
+            logger.info("🕒 Setting local transcription timeout to \(String(format: "%.1f", maxTranscriptionTime)) seconds for \(String(format: "%.1f", duration))s audio")
 
             do {
                 text = try await withTranscriptionTimeout(seconds: maxTranscriptionTime) { [self] in
                     try await localTranscriptionService!.transcribe(audioURL: processedURL, model: currentModel)
                 }
             } catch is TranscriptionTimeoutError {
-                logger.error("🔴 Local transcription timed out after \(String(format: "%.1f", maxTranscriptionTime)) seconds")
-                throw APITranscriptionError.timeout
+                logger.error("🔴 Local transcription timed out after \(String(format: "%.1f", maxTranscriptionTime)) seconds for \(String(format: "%.1f", fileSizeMB))MB file (\(String(format: "%.1f", duration))s duration)")
+
+                // Create detailed timeout error response
+                let errorResponse = TranscriptionErrorResponse(
+                    success: false,
+                    error: ErrorDetails(
+                        code: "TRANSCRIPTION_TIMEOUT",
+                        message: "Local transcription timed out after \(String(format: "%.1f", maxTranscriptionTime/60)) minutes. File: \(String(format: "%.1f", fileSizeMB))MB, Duration: \(String(format: "%.1f", duration))s. Consider using smaller files or cloud transcription for large files."
+                    )
+                )
+                let encoder = JSONEncoder()
+                encoder.outputFormatting = .prettyPrinted
+                let errorData = try encoder.encode(errorResponse)
+                throw APIError.transcriptionFailed(String(data: errorData, encoding: .utf8) ?? "Timeout error")
             }
         case .parakeet:
             logger.debug("🦜 Using Parakeet transcription service...")
-            text = try await parakeetTranscriptionService!.transcribe(audioURL: processedURL, model: currentModel)
+            do {
+                text = try await parakeetTranscriptionService!.transcribe(audioURL: processedURL, model: currentModel)
+            } catch {
+                logger.error("🔴 Parakeet transcription failed: \(error.localizedDescription)")
+                throw error
+            }
         case .nativeApple:
             logger.debug("🍎 Using Apple native transcription service...")
-            text = try await nativeAppleTranscriptionService.transcribe(audioURL: processedURL, model: currentModel)
+            do {
+                text = try await nativeAppleTranscriptionService.transcribe(audioURL: processedURL, model: currentModel)
+            } catch {
+                logger.error("🔴 Apple native transcription failed: \(error.localizedDescription)")
+                throw error
+            }
         default: // Cloud models
             logger.debug("☁️ Using cloud transcription service...")
-            text = try await cloudTranscriptionService.transcribe(audioURL: processedURL, model: currentModel)
+            do {
+                text = try await cloudTranscriptionService.transcribe(audioURL: processedURL, model: currentModel)
+            } catch {
+                logger.error("🔴 Cloud transcription failed: \(error.localizedDescription)")
+                throw error
+            }
         }
 
         let transcriptionDuration = Date().timeIntervalSince(transcriptionStart)

@@ -473,26 +473,27 @@ class WorkingHTTPServer {
         // Process transcription with proper async/await and timeout
         logger.debug("🔄 CONN-\(connectionId): Starting transcription with timeout...")
 
+        // Ensure cleanup happens regardless of success/failure
+        defer {
+            removeActiveRequest(requestId)
+            logger.debug("🧹 CONN-\(connectionId): Request tracking cleaned up")
+        }
+
         let transcriptionResult: Data
         do {
-            transcriptionResult = try await withTimeout(seconds: 480) { [self] in // 8 minutes
+            transcriptionResult = try await withTimeout(seconds: 900) { [self] in // 15 minutes
                 try await transcriptionProcessor.transcribe(audioData: fileData, filename: filename)
             }
             logger.debug("✅ CONN-\(connectionId): Transcription completed, result size: \(transcriptionResult.count) bytes")
         } catch {
             logger.error("🔴 CONN-\(connectionId): Transcription failed: \(error)")
-            // Clean up request tracking on error
-            removeActiveRequest(requestId)
 
             if error is WorkingHTTPTimeoutError {
-                return HTTPResponse.error(504, "Transcription timeout: Request took longer than 8 minutes")
+                return HTTPResponse.error(504, "Transcription timeout: Request took longer than 15 minutes. Try with smaller files or check server load.")
             } else {
                 return HTTPResponse.error(500, "Transcription failed: \(error.localizedDescription)")
             }
         }
-        
-        // Clean up request tracking
-        removeActiveRequest(requestId)
 
         return HTTPResponse.success(data: transcriptionResult, contentType: "application/json")
     }

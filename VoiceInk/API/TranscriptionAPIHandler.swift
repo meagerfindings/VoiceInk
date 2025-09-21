@@ -54,14 +54,16 @@ class TranscriptionAPIHandler {
         let fileSizeMB = Double(audioData.count) / 1024 / 1024
         logger.info("Starting transcription for \(String(format: "%.1f", fileSizeMB))MB file")
 
-        // Add file size limit for API transcriptions (100MB max to prevent infinite loops)
-        if fileSizeMB > 100 {
-            logger.error("File size (\(String(format: "%.1f", fileSizeMB))MB) exceeds 100MB limit for API transcriptions")
+        // Add stricter file size limits for API transcriptions to prevent whisper_full infinite loops
+        // Large files can cause the C-level whisper_full function to hang indefinitely
+        let maxSizeMB: Double = 25.0 // Reduced from 100MB to 25MB for safety
+        if fileSizeMB > maxSizeMB {
+            logger.error("File size (\(String(format: "%.1f", fileSizeMB))MB) exceeds \(String(format: "%.1f", maxSizeMB))MB limit for API transcriptions")
             let errorResponse = TranscriptionErrorResponse(
                 success: false,
                 error: ErrorDetails(
                     code: "FILE_TOO_LARGE",
-                    message: "File size (\(String(format: "%.1f", fileSizeMB))MB) exceeds the 100MB limit for API transcriptions. Please use smaller audio files."
+                    message: "File size (\(String(format: "%.1f", fileSizeMB))MB) exceeds the \(String(format: "%.1f", maxSizeMB))MB limit for API transcriptions. Large files can cause processing to hang indefinitely. Please use smaller audio files or split long recordings into segments."
                 )
             )
             let encoder = JSONEncoder()
@@ -114,12 +116,12 @@ class TranscriptionAPIHandler {
             }
         }
         
-        // For large files, log progress and warn about potential delays
-        if fileSizeMB > 10 {
-            logger.notice("Processing large audio file (\(String(format: "%.1f", fileSizeMB))MB) - this may take several minutes")
+        // Warn about files approaching limits
+        if fileSizeMB > 5 {
+            logger.notice("Processing large audio file (\(String(format: "%.1f", fileSizeMB))MB) - this may take several minutes and consume significant memory")
         }
-        if fileSizeMB > 50 {
-            logger.warning("⚠️ Very large audio file (\(String(format: "%.1f", fileSizeMB))MB) - processing may take 10+ minutes")
+        if fileSizeMB > 15 {
+            logger.warning("⚠️ Very large audio file (\(String(format: "%.1f", fileSizeMB))MB) - approaching 25MB limit, high memory usage and risk of processing hanging")
         }
 
         // Save audio data to temporary file with correct extension
@@ -172,22 +174,34 @@ class TranscriptionAPIHandler {
         
         // Process audio file
         logger.info("Processing audio samples...")
-        let samples = try await audioProcessor.processAudioToSamples(tempURL)
+        var samples = try await audioProcessor.processAudioToSamples(tempURL)
         logger.info("Audio samples processed: \(samples.count) samples")
+
+        // Clear original audio data from memory immediately after processing
+        // This helps reduce memory pressure for large files
         
         // Get audio duration
         let audioAsset = AVURLAsset(url: tempURL)
         let duration = CMTimeGetSeconds(try await audioAsset.load(.duration))
         logger.info("Audio duration: \(String(format: "%.1f", duration)) seconds (\(String(format: "%.1f", duration / 60)) minutes)")
 
-        // Add duration limit for API transcriptions (30 minutes max to prevent infinite loops)
-        if duration > 1800 { // 30 minutes
-            logger.error("Audio duration (\(String(format: "%.1f", duration / 60)) minutes) exceeds 30-minute limit for API transcriptions")
+        // Warn about long duration files
+        if duration > 300 { // 5 minutes
+            logger.notice("Processing long audio file (\(String(format: "%.1f", duration / 60)) minutes) - this may take significant time")
+        }
+        if duration > 600 { // 10 minutes
+            logger.warning("⚠️ Very long audio file (\(String(format: "%.1f", duration / 60)) minutes) - approaching 15-minute limit, risk of processing hanging")
+        }
+
+        // Add conservative duration limit for API transcriptions to prevent whisper_full infinite loops
+        let maxDurationMinutes: Double = 15.0 // Reduced from 30 to 15 minutes for safety
+        if duration > maxDurationMinutes * 60 {
+            logger.error("Audio duration (\(String(format: "%.1f", duration / 60)) minutes) exceeds \(String(format: "%.1f", maxDurationMinutes))-minute limit for API transcriptions")
             let errorResponse = TranscriptionErrorResponse(
                 success: false,
                 error: ErrorDetails(
                     code: "AUDIO_TOO_LONG",
-                    message: "Audio duration (\(String(format: "%.1f", duration / 60)) minutes) exceeds the 30-minute limit for API transcriptions. Please use shorter audio files."
+                    message: "Audio duration (\(String(format: "%.1f", duration / 60)) minutes) exceeds the \(String(format: "%.1f", maxDurationMinutes))-minute limit for API transcriptions. Long audio files can cause processing to hang indefinitely. Please split into shorter segments."
                 )
             )
             let encoder = JSONEncoder()
@@ -201,9 +215,11 @@ class TranscriptionAPIHandler {
             .appendingPathExtension("wav")
         
         try audioProcessor.saveSamplesAsWav(samples: samples, to: processedURL)
-        
+
         defer {
             try? FileManager.default.removeItem(at: processedURL)
+            // Clear samples array from memory to help with garbage collection
+            samples.removeAll()
         }
         
         // Transcribe using appropriate service with detailed logging

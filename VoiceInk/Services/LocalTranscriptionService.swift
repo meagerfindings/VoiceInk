@@ -55,7 +55,7 @@ class LocalTranscriptionService: TranscriptionService {
         }
         
         // Read audio data
-        let data = try readAudioSamples(audioURL)
+        var data = try readAudioSamples(audioURL)
         
         // Set prompt
         let currentPrompt = UserDefaults.standard.string(forKey: "TranscriptionPrompt") ?? ""
@@ -72,13 +72,16 @@ class LocalTranscriptionService: TranscriptionService {
         var text = await whisperContext.getTranscription()
 
         logger.notice("✅ Local transcription completed successfully.")
-        
+
+        // Clear audio data from memory after transcription
+        data.removeAll()
+
         // Only release resources if we created a new context (not using the shared one)
         if await whisperState?.whisperContext !== whisperContext {
             await whisperContext.releaseResources()
             self.whisperContext = nil
         }
-        
+
         return text
     }
     

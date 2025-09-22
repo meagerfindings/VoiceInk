@@ -125,6 +125,65 @@ struct APISettingsView: View {
             } header: {
                 Text("API Information")
             }
+            
+            // Transcription Safeguards (Whisper abort budget)
+            Section {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Whisper Abort Budget")
+                        .font(.headline)
+                    Text("Control how long the core transcription engine runs before being forcefully aborted. This helps prevent CPU runaway on problematic inputs.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    
+                    HStack {
+                        Text("Time Multiplier")
+                        Spacer()
+                        TextField("8.0", value: Binding(
+                            get: { UserDefaults.standard.object(forKey: "WhisperAbortMultiplier") as? Double ?? 8.0 },
+                            set: { UserDefaults.standard.set($0, forKey: "WhisperAbortMultiplier") }
+                        ), formatter: {
+                            let nf = NumberFormatter()
+                            nf.numberStyle = .decimal
+                            nf.minimum = 1
+                            nf.maximum = 20
+                            nf.maximumFractionDigits = 1
+                            return nf
+                        }())
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 80)
+                    }
+                    Text("Total allowed compute time = audio duration × multiplier (default 8×).")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                    
+                    HStack {
+                        Text("Max Seconds Cap")
+                        Spacer()
+                        TextField("900", value: Binding(
+                            get: { UserDefaults.standard.object(forKey: "WhisperAbortMaxSeconds") as? Double ?? 900.0 },
+                            set: { UserDefaults.standard.set($0, forKey: "WhisperAbortMaxSeconds") }
+                        ), formatter: {
+                            let nf = NumberFormatter()
+                            nf.numberStyle = .decimal
+                            nf.minimum = 60
+                            nf.maximum = 7200
+                            nf.maximumFractionDigits = 0
+                            return nf
+                        }())
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 100)
+                    }
+                    Text("Hard ceiling on compute time regardless of duration (default 900s = 15 min).")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+            } header: {
+                Text("Transcription Safeguards")
+            } footer: {
+                Text("Changes apply to new transcriptions. Lower values make aborts more aggressive; higher values allow longer processing.")
+                    .font(.caption)
+            }
         }
         .formStyle(.grouped)
         .onAppear {

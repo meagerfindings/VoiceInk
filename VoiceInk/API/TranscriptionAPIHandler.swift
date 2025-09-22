@@ -65,10 +65,10 @@ class TranscriptionAPIHandler {
         let formatWarning: String
 
         if audioFormat == .mp3 {
-            maxSizeMB = 3.0 // Very strict limit for MP3s due to frequent infinite loops
+            maxSizeMB = 10.0 // Raised MP3 limit now that abort safeguards are in place
             formatWarning = " MP3 files are particularly prone to processing issues."
         } else {
-            maxSizeMB = 10.0 // More generous for WAV and other formats
+            maxSizeMB = 30.0 // Raised limit for WAV/PCM and other formats
             formatWarning = ""
         }
 
@@ -180,8 +180,8 @@ class TranscriptionAPIHandler {
             let audioAssetPrecheck = AVURLAsset(url: tempURL)
             let estimatedDuration = CMTimeGetSeconds(try await audioAssetPrecheck.load(.duration))
 
-            // Apply stricter duration limits for MP3s
-            let maxDurationMinutes: Double = audioFormat == .mp3 ? 5.0 : 15.0
+            // Apply duration limits aligned with safer processing windows
+            let maxDurationMinutes: Double = audioFormat == .mp3 ? 8.0 : 15.0
 
             if estimatedDuration > maxDurationMinutes * 60 {
                 logger.error("Pre-flight check: \(audioFormat.rawValue.uppercased()) duration (\(String(format: "%.1f", estimatedDuration / 60)) minutes) exceeds \(String(format: "%.1f", maxDurationMinutes))-minute limit")
@@ -278,9 +278,9 @@ class TranscriptionAPIHandler {
         switch currentModel.provider {
         case .local:
             logger.debug("🏠 Using local transcription service...")
-            // Use much more aggressive timeouts for MP3 files and format-specific limits
-            let baseTimeout: TimeInterval = audioFormat == .mp3 ? 120 : 300 // 2 min for MP3s, 5 min for others
-            let maxTranscriptionTime: TimeInterval = min(baseTimeout, max(60, duration * 3)) // Much stricter than before
+            // Timeouts aligned with higher safe limits and abort safeguards
+            let baseTimeout: TimeInterval = audioFormat == .mp3 ? 600 : 1200 // 10 min for MP3s, 20 min for others
+            let maxTranscriptionTime: TimeInterval = min(baseTimeout, max(120, duration * 6))
             logger.info("🕒 Setting local transcription timeout to \(String(format: "%.1f", maxTranscriptionTime)) seconds for \(String(format: "%.1f", duration))s \(audioFormat.rawValue.uppercased()) audio")
 
             do {

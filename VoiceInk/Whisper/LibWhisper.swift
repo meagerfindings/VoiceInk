@@ -78,10 +78,13 @@ actor WhisperContext {
         params.temperature = 0.2
 
         // Install an abort callback so we can reliably stop runaway computations
-        // Compute a per-call time budget based on audio length with safe caps
+        // Compute a per-call time budget based on audio length with safe caps (configurable)
         let estimatedSeconds = max(0.0, Double(samples.count) / 16_000.0)
-        // Allow up to 6x audio duration, with a minimum of 20s and a hard cap of 120s
-        let timeBudgetSeconds = min(120.0, max(20.0, estimatedSeconds * 6.0))
+        let configuredMultiplier = UserDefaults.standard.object(forKey: "WhisperAbortMultiplier") as? Double ?? 8.0
+        let configuredMaxCap = UserDefaults.standard.object(forKey: "WhisperAbortMaxSeconds") as? Double ?? 900.0 // 15 minutes
+        let multiplier = max(1.0, configuredMultiplier)
+        let maxCap = max(60.0, configuredMaxCap)
+        let timeBudgetSeconds = min(maxCap, max(20.0, estimatedSeconds * multiplier))
         let deadlineTimestamp = Date().addingTimeInterval(timeBudgetSeconds).timeIntervalSince1970
         let deadlinePtr = UnsafeMutablePointer<Double>.allocate(capacity: 1)
         deadlinePtr.initialize(to: deadlineTimestamp)

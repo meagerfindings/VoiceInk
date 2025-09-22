@@ -726,8 +726,8 @@ class TranscriptionProcessor {
         await apiServer?.setAPIProcessingState(isProcessing: true, info: processingInfo)
         
         do {
-            // Use withThrowingTimeout for 8-minute timeout
-            let result = try await withThrowingTimeout(of: .seconds(480)) { [self] in
+            // Use withThrowingTimeout for a higher ceiling to accommodate longer files
+            let result = try await withThrowingTimeout(of: .seconds(1200)) { [self] in
                 try await apiHandler.transcribe(audioData: audioData, filename: filename)
             }
             

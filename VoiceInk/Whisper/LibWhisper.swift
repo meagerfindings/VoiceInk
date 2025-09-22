@@ -16,6 +16,15 @@ actor WhisperContext {
     private var vadModelPath: String?
     private let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "WhisperContext")
 
+    // Static C-ABI callback used by ggml/whisper to determine if a computation should be aborted
+    private static let abortCallback: @convention(c) (UnsafeMutableRawPointer?) -> Bool = { userData in
+        guard let userData = userData else { return false }
+        let deadlineTS = userData.assumingMemoryBound(to: Double.self).pointee
+        let nowTS = Date().timeIntervalSince1970
+        // Abort when the current time exceeds the deadline
+        return nowTS > deadlineTS
+    }
+
     private init() {}
 
     init(context: OpaquePointer) {
@@ -56,7 +65,8 @@ actor WhisperContext {
             params.initial_prompt = nil
         }
         
-        params.print_realtime = true
+        // Avoid realtime printing from whisper.cpp (the library itself advises against it)
+        params.print_realtime = false
         params.print_progress = false
         params.print_timestamps = true
         params.print_special = false
@@ -66,6 +76,17 @@ actor WhisperContext {
         params.no_context = true
         params.single_segment = false
         params.temperature = 0.2
+
+        // Install an abort callback so we can reliably stop runaway computations
+        // Compute a per-call time budget based on audio length with safe caps
+        let estimatedSeconds = max(0.0, Double(samples.count) / 16_000.0)
+        // Allow up to 6x audio duration, with a minimum of 20s and a hard cap of 120s
+        let timeBudgetSeconds = min(120.0, max(20.0, estimatedSeconds * 6.0))
+        let deadlineTimestamp = Date().addingTimeInterval(timeBudgetSeconds).timeIntervalSince1970
+        let deadlinePtr = UnsafeMutablePointer<Double>.allocate(capacity: 1)
+        deadlinePtr.initialize(to: deadlineTimestamp)
+        params.abort_callback = WhisperContext.abortCallback
+        params.abort_callback_user_data = UnsafeMutableRawPointer(deadlinePtr)
 
         whisper_reset_timings(context)
         
@@ -90,10 +111,14 @@ actor WhisperContext {
         var success = true
         samples.withUnsafeBufferPointer { samplesBuffer in
             if whisper_full(context, params, samplesBuffer.baseAddress, Int32(samplesBuffer.count)) != 0 {
-                logger.error("Failed to run whisper_full. VAD enabled: \(params.vad)")
+                logger.error("Failed to run whisper_full (aborted or error). VAD enabled: \(params.vad)")
                 success = false
             }
         }
+        
+        // Clean up abort user data
+        deadlinePtr.deinitialize(count: 1)
+        deadlinePtr.deallocate()
         
         languageCString = nil
         promptCString = nil

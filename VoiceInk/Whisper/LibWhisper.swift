@@ -14,6 +14,8 @@ actor WhisperContext {
     private var prompt: String?
     private var promptCString: [CChar]?
     private var vadModelPath: String?
+    // Keep a handle to the abort deadline so we can cancel from the outside
+    private var abortDeadlinePtr: UnsafeMutablePointer<Double>?
     private let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "WhisperContext")
 
     // Static C-ABI callback used by ggml/whisper to determine if a computation should be aborted
@@ -88,6 +90,7 @@ actor WhisperContext {
         let deadlineTimestamp = Date().addingTimeInterval(timeBudgetSeconds).timeIntervalSince1970
         let deadlinePtr = UnsafeMutablePointer<Double>.allocate(capacity: 1)
         deadlinePtr.initialize(to: deadlineTimestamp)
+        self.abortDeadlinePtr = deadlinePtr
         params.abort_callback = WhisperContext.abortCallback
         params.abort_callback_user_data = UnsafeMutableRawPointer(deadlinePtr)
 
@@ -120,13 +123,26 @@ actor WhisperContext {
         }
         
         // Clean up abort user data
-        deadlinePtr.deinitialize(count: 1)
-        deadlinePtr.deallocate()
+        if let ptr = abortDeadlinePtr {
+            ptr.deinitialize(count: 1)
+            ptr.deallocate()
+            abortDeadlinePtr = nil
+        }
         
         languageCString = nil
         promptCString = nil
         
         return success
+    }
+
+    // Request immediate abort of any in-flight whisper_full() by setting deadline to now
+    func requestAbortNow() {
+        if let ptr = abortDeadlinePtr {
+            ptr.pointee = Date().timeIntervalSince1970 - 1.0
+            logger.info("Abort requested: deadline set to now")
+        } else {
+            logger.info("Abort requested: no active computation")
+        }
     }
 
     func getTranscription() -> String {

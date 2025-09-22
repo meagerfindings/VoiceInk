@@ -1066,9 +1066,15 @@ class TranscriptionAPIServer: ObservableObject, WorkingHTTPServerDelegate {
     func forceStopAPIProcessing() {
         self.isProcessingAPIRequest = false
         self.currentAPIRequestInfo = nil
+        // Attempt to abort any in-flight Whisper computation immediately
+        Task { [weak self] in
+            if let whisper = await self?.whisperState.whisperContext {
+                await whisper.requestAbortNow()
+            }
+        }
         // Clear all active requests on force stop
         self.activeRequests.removeAll()
-        print("🛑 Force stopped stuck API transcription processing")
+        print("🛑 Force stopped stuck API transcription processing (abort signaled)")
     }
     
     func isRequestActive(_ requestId: String) -> Bool {

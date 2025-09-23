@@ -68,7 +68,8 @@ class LocalTranscriptionService: TranscriptionService {
         let success = try await withTaskCancellationHandler {
             await whisperContext.fullTranscribe(samples: data)
         } onCancel: {
-            Task {
+            // Use detached task with high priority to ensure immediate abort
+            Task.detached(priority: .high) {
                 await whisperContext.requestAbortNow()
             }
         }

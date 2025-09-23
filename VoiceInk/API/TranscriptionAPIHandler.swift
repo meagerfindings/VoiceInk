@@ -8,7 +8,7 @@ struct TranscriptionTimeoutError: Error {
     let duration: TimeInterval
 }
 
-func withTranscriptionTimeout<T>(seconds: TimeInterval, operation: @escaping () async throws -> T) async throws -> T {
+func withTranscriptionTimeout<T>(seconds: TimeInterval, whisperState: WhisperState, operation: @escaping () async throws -> T) async throws -> T {
     return try await withThrowingTaskGroup(of: T.self) { group in
         // Add the actual operation
         group.addTask {
@@ -18,6 +18,12 @@ func withTranscriptionTimeout<T>(seconds: TimeInterval, operation: @escaping () 
         // Add the timeout task
         group.addTask {
             try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+            
+            // On timeout, immediately abort any running whisper computation
+            if let whisperContext = await whisperState.whisperContext {
+                await whisperContext.requestAbortNow()
+            }
+            
             throw TranscriptionTimeoutError(duration: seconds)
         }
 
@@ -284,7 +290,7 @@ class TranscriptionAPIHandler {
             logger.info("🕒 Setting local transcription timeout to \(String(format: "%.1f", maxTranscriptionTime)) seconds for \(String(format: "%.1f", duration))s \(audioFormat.rawValue.uppercased()) audio")
 
             do {
-                text = try await withTranscriptionTimeout(seconds: maxTranscriptionTime) { [self] in
+                text = try await withTranscriptionTimeout(seconds: maxTranscriptionTime, whisperState: whisperState) { [self] in
                     try await localTranscriptionService!.transcribe(audioURL: processedURL, model: currentModel)
                 }
             } catch is TranscriptionTimeoutError {

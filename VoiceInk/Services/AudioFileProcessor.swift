@@ -60,6 +60,9 @@ class AudioProcessor {
         var currentFrame: AVAudioFramePosition = 0
         
         while currentFrame < totalFrames {
+            // Check for cancellation periodically during processing
+            try Task.checkCancellation()
+            
             let remainingFrames = totalFrames - currentFrame
             let framesToRead = min(chunkSize, AVAudioFrameCount(remainingFrames))
             

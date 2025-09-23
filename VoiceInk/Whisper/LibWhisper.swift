@@ -84,8 +84,18 @@ actor WhisperContext {
         let estimatedSeconds = max(0.0, Double(samples.count) / 16_000.0)
         let configuredMultiplier = UserDefaults.standard.object(forKey: "WhisperAbortMultiplier") as? Double ?? 8.0
         let configuredMaxCap = UserDefaults.standard.object(forKey: "WhisperAbortMaxSeconds") as? Double ?? 900.0 // 15 minutes
-        let multiplier = max(1.0, configuredMultiplier)
-        let maxCap = max(60.0, configuredMaxCap)
+        
+        // Reduce timeout for small files to prevent infinite loops
+        let multiplier: Double
+        let maxCap: Double
+        if estimatedSeconds < 45 {
+            multiplier = max(1.0, min(4.0, configuredMultiplier)) // Cap at 4x for small files
+            maxCap = max(60.0, min(300.0, configuredMaxCap)) // Cap at 5 minutes for small files
+        } else {
+            multiplier = max(1.0, configuredMultiplier)
+            maxCap = max(60.0, configuredMaxCap)
+        }
+        
         let timeBudgetSeconds = min(maxCap, max(20.0, estimatedSeconds * multiplier))
         let deadlineTimestamp = Date().addingTimeInterval(timeBudgetSeconds).timeIntervalSince1970
         let deadlinePtr = UnsafeMutablePointer<Double>.allocate(capacity: 1)

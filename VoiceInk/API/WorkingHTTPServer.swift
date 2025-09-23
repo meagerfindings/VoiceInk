@@ -8,7 +8,7 @@ struct WorkingHTTPTimeoutError: Error {
     let duration: TimeInterval
 }
 
-func withTimeout<T>(seconds: TimeInterval, operation: @escaping () async throws -> T) async throws -> T {
+func withTimeout<T>(seconds: TimeInterval, transcriptionProcessor: TranscriptionProcessor? = nil, operation: @escaping () async throws -> T) async throws -> T {
     return try await withThrowingTaskGroup(of: T.self) { group in
         // Add the actual operation
         group.addTask {
@@ -18,6 +18,12 @@ func withTimeout<T>(seconds: TimeInterval, operation: @escaping () async throws 
         // Add the timeout task
         group.addTask {
             try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+            
+            // On timeout, immediately abort any running whisper computation
+            if let processor = transcriptionProcessor {
+                await processor.requestAbortNow()
+            }
+            
             throw WorkingHTTPTimeoutError(duration: seconds)
         }
 
@@ -481,7 +487,7 @@ class WorkingHTTPServer {
 
         let transcriptionResult: Data
         do {
-            transcriptionResult = try await withTimeout(seconds: 900) { [self] in // 15 minutes
+            transcriptionResult = try await withTimeout(seconds: 900, transcriptionProcessor: transcriptionProcessor) { [self] in // 15 minutes
                 try await transcriptionProcessor.transcribe(audioData: fileData, filename: filename)
             }
             logger.debug("✅ CONN-\(connectionId): Transcription completed, result size: \(transcriptionResult.count) bytes")

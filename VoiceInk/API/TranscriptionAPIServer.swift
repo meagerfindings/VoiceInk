@@ -690,6 +690,17 @@ class TranscriptionProcessor {
         self.apiHandler = TranscriptionAPIHandler(whisperState: whisperState, modelContext: modelContext)
     }
     
+    /// Request immediate abort of any in-flight transcription
+    func requestAbortNow() async {
+        await MainActor.run {
+            Task {
+                if let whisperContext = await whisperState.whisperContext {
+                    await whisperContext.requestAbortNow()
+                }
+            }
+        }
+    }
+    
     /// Transcribe audio data - runs on background queue, safely accesses MainActor state
     func transcribe(audioData: Data, filename: String? = nil) async throws -> Data {
         logger.info("Starting transcription of \(audioData.count) bytes, filename: \(filename ?? "none")")

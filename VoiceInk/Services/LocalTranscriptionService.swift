@@ -61,8 +61,17 @@ class LocalTranscriptionService: TranscriptionService {
         let currentPrompt = UserDefaults.standard.string(forKey: "TranscriptionPrompt") ?? ""
         await whisperContext.setPrompt(currentPrompt)
         
-        // Transcribe
-        let success = await whisperContext.fullTranscribe(samples: data)
+        // Check for cancellation before the heavy computation
+        try Task.checkCancellation()
+        
+        // Transcribe with Swift cancellation handler bridging to Whisper abort
+        let success = try await withTaskCancellationHandler {
+            await whisperContext.fullTranscribe(samples: data)
+        } onCancel: {
+            Task {
+                await whisperContext.requestAbortNow()
+            }
+        }
         
         guard success else {
             logger.error("Core transcription engine failed (whisper_full).")

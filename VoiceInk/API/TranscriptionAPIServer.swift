@@ -693,7 +693,7 @@ class TranscriptionProcessor {
     /// Request immediate abort of any in-flight transcription
     func requestAbortNow() async {
         await MainActor.run {
-            Task {
+            _ = Task {
                 if let whisperContext = await whisperState.whisperContext {
                     await whisperContext.requestAbortNow()
                 }
@@ -704,58 +704,40 @@ class TranscriptionProcessor {
     /// Transcribe audio data - runs on background queue, safely accesses MainActor state
     func transcribe(audioData: Data, filename: String? = nil) async throws -> Data {
         logger.info("Starting transcription of \(audioData.count) bytes, filename: \(filename ?? "none")")
-        
+
         // Calculate file size for display
         let fileSizeMB = Double(audioData.count) / 1024 / 1024
         let fileSizeInfo = String(format: "%.1f MB", fileSizeMB)
-        
-        // Create request ID for deduplication (based on filename + size or data hash)
-        let requestId = if let filename = filename {
-            "\(filename)_\(audioData.count)"
-        } else {
-            "audio_\(audioData.count)_\(String(audioData.hashValue))"
+
+        // Update progress if we have a current processing request
+        if let currentRequest = await MainActor.run(body: { apiServer?.currentProcessingRequest }) {
+            let progressInfo: String
+            if let filename = filename {
+                progressInfo = "Processing \(filename) (\(fileSizeInfo))"
+            } else {
+                progressInfo = "Processing \(fileSizeInfo) audio file..."
+            }
+
+            await MainActor.run {
+                currentRequest.updateProgress(0.2, info: progressInfo)
+            }
         }
-        
-        // Check for duplicate requests
-        if await apiServer?.isRequestActive(requestId) == true {
-            logger.warning("🔄 Duplicate request detected: \(requestId)")
-            throw APITranscriptionError.duplicateRequest
-        }
-        
-        // Add to active requests tracking
-        await apiServer?.addActiveRequest(requestId)
-        
-        // Create processing info message with filename if available
-        let processingInfo: String
-        if let filename = filename {
-            processingInfo = "Processing \(filename) (\(fileSizeInfo))"
-        } else {
-            processingInfo = "Processing \(fileSizeInfo) audio file..."
-        }
-        
-        // Set processing state
-        await apiServer?.setAPIProcessingState(isProcessing: true, info: processingInfo)
-        
+
         do {
             // Use withThrowingTimeout for a higher ceiling to accommodate longer files
             let result = try await withThrowingTimeout(of: .seconds(1200)) { [self] in
                 try await apiHandler.transcribe(audioData: audioData, filename: filename)
             }
-            
-            // Clear processing state and remove from active requests on success
-            await apiServer?.setAPIProcessingState(isProcessing: false, info: nil)
-            await apiServer?.removeActiveRequest(requestId)
+
+            logger.info("✅ Transcription completed successfully, result size: \(result.count) bytes")
             return result
         } catch {
-            // Clear processing state and remove from active requests on error
-            await apiServer?.setAPIProcessingState(isProcessing: false, info: nil)
-            await apiServer?.removeActiveRequest(requestId)
-            
             if error is TimeoutError {
-                logger.error("⏰ Transcription timed out after 8 minutes for: \(filename ?? "unknown")")
+                logger.error("⏰ Transcription timed out after 20 minutes for: \(filename ?? "unknown")")
                 throw APITranscriptionError.timeout
             }
-            
+
+            logger.error("🔴 Transcription failed: \(error.localizedDescription)")
             throw error
         }
     }
@@ -772,9 +754,19 @@ class TranscriptionAPIServer: ObservableObject, WorkingHTTPServerDelegate {
     @Published var port: Int = 5000
     @Published var lastError: String?
     
-    // API transcription processing tracking
-    @Published var isProcessingAPIRequest = false
-    @Published var currentAPIRequestInfo: String?
+    // API transcription queue and processing tracking
+    @Published var activeTranscriptions: [APITranscriptionRequest] = []
+    @Published var transcriptionQueue: [APITranscriptionRequest] = []
+    @Published var currentProcessingRequest: APITranscriptionRequest?
+
+    // Legacy properties for backward compatibility (computed from new state)
+    var isProcessingAPIRequest: Bool {
+        return currentProcessingRequest != nil
+    }
+
+    var currentAPIRequestInfo: String? {
+        return currentProcessingRequest?.processingInfo
+    }
     
     // API statistics tracking
     @Published var apiTranscriptionCount: Int = 0
@@ -832,6 +824,7 @@ class TranscriptionAPIServer: ObservableObject, WorkingHTTPServerDelegate {
             transcriptionProcessor: transcriptionProcessor
         )
         httpServer?.delegate = self
+        httpServer?.apiServer = self
         
         // Start HTTP server
         do {
@@ -967,33 +960,39 @@ class TranscriptionAPIServer: ObservableObject, WorkingHTTPServerDelegate {
     
     // MARK: - WorkingHTTPServerDelegate
     
-    func httpServer(_ server: WorkingHTTPServer, didChangeState isRunning: Bool) {
-        self.isRunning = isRunning
-        if isRunning {
-            lastError = nil
-            logger.info("API server is ready on port \(self.port)")
-        } else {
-            logger.info("API server stopped")
+    nonisolated func httpServer(_ server: WorkingHTTPServer, didChangeState isRunning: Bool) {
+        Task { @MainActor in
+            self.isRunning = isRunning
+            if isRunning {
+                lastError = nil
+                logger.info("API server is ready on port \(self.port)")
+            } else {
+                logger.info("API server stopped")
+            }
         }
     }
-    
-    func httpServer(_ server: WorkingHTTPServer, didEncounterError error: String) {
-        lastError = error
-        logger.error("API server error: \(error)")
-    }
-    
-    func httpServer(_ server: WorkingHTTPServer, didProcessRequest stats: RequestStats) {
-        requestCount += 1
-        totalProcessingTime += stats.processingTime
-        
-        // Track API transcription statistics
-        if stats.path == "/api/transcribe" && stats.success {
-            apiTranscriptionCount += 1
-            totalAPIProcessingTime += stats.processingTime
-            // Note: audio duration will be updated when the transcription is saved to database
+
+    nonisolated func httpServer(_ server: WorkingHTTPServer, didEncounterError error: String) {
+        Task { @MainActor in
+            lastError = error
+            logger.error("API server error: \(error)")
         }
-        
-        logger.info("Processed \(stats.method) \(stats.path) - \(stats.success ? "SUCCESS" : "FAILED") in \(String(format: "%.2f", stats.processingTime * 1000))ms")
+    }
+
+    nonisolated func httpServer(_ server: WorkingHTTPServer, didProcessRequest stats: RequestStats) {
+        Task { @MainActor in
+            requestCount += 1
+            totalProcessingTime += stats.processingTime
+
+            // Track API transcription statistics
+            if stats.path == "/api/transcribe" && stats.success {
+                apiTranscriptionCount += 1
+                totalAPIProcessingTime += stats.processingTime
+                // Note: audio duration will be updated when the transcription is saved to database
+            }
+
+            logger.info("Processed \(stats.method) \(stats.path) - \(stats.success ? "SUCCESS" : "FAILED") in \(String(format: "%.2f", stats.processingTime * 1000))ms")
+        }
     }
     
     // Enhanced health status method for detailed API information
@@ -1067,39 +1066,197 @@ class TranscriptionAPIServer: ObservableObject, WorkingHTTPServerDelegate {
         return result == KERN_SUCCESS ? Double(info.resident_size) / 1024 / 1024 : 0 // Convert to MB
     }
     
-    // MARK: - API Processing State Management
-    
-    func setAPIProcessingState(isProcessing: Bool, info: String? = nil) {
-        self.isProcessingAPIRequest = isProcessing
-        self.currentAPIRequestInfo = info
+    // MARK: - API Queue Management
+
+    /// Maximum number of requests that can be queued
+    private let maxQueueSize = 10
+
+    /// Enqueue a new transcription request
+    func enqueueTranscription(requestId: String, filename: String?, fileSize: Int) -> APITranscriptionRequest? {
+        // Check if queue is full
+        guard transcriptionQueue.count < maxQueueSize else {
+            logger.warning("Queue is full (\(self.maxQueueSize) requests), rejecting new request")
+            return nil
+        }
+
+        // Check for duplicate request
+        let existingRequest = transcriptionQueue.first { $0.requestId == requestId } ??
+                             activeTranscriptions.first { $0.requestId == requestId }
+        if existingRequest != nil {
+            logger.warning("Duplicate request detected: \(requestId)")
+            return nil
+        }
+
+        // Create new request
+        let request = APITranscriptionRequest(requestId: requestId, filename: filename, fileSize: fileSize)
+
+        // Add to queue
+        transcriptionQueue.append(request)
+        activeTranscriptions.append(request)
+
+        // Update queue positions and wait times
+        updateQueueInfo()
+
+        logger.info("🟢 Enqueued transcription: \(filename ?? "unknown") (Queue: \(self.transcriptionQueue.count))")
+
+        // Try to process next if no current processing
+        processNextInQueue()
+
+        return request
     }
-    
+
+    /// Process the next request in the queue
+    private func processNextInQueue() {
+        // Check if already processing something
+        guard currentProcessingRequest == nil else {
+            logger.debug("Already processing a request, queue will continue when complete")
+            return
+        }
+
+        // Get next request from queue
+        guard let nextRequest = transcriptionQueue.first else {
+            logger.debug("No requests in queue")
+            return
+        }
+
+        // Remove from queue and mark as processing
+        transcriptionQueue.removeFirst()
+        currentProcessingRequest = nextRequest
+        nextRequest.updateStatus(.processing, info: "Starting transcription...")
+
+        // Update remaining queue positions
+        updateQueueInfo()
+
+        logger.info("🔄 Started processing: \(nextRequest.displayFilename)")
+    }
+
+    /// Update queue positions and estimated wait times
+    private func updateQueueInfo() {
+        for (index, request) in transcriptionQueue.enumerated() {
+            let position = index + 1
+            let estimatedWait = TimeInterval(position * 60) // Rough estimate: 1 minute per request
+            request.updateQueueInfo(position: position, estimatedWait: estimatedWait)
+        }
+    }
+
+    /// Complete the current processing request
+    func completeCurrentRequest(result: Data?, transcriptionText: String?, error: String?) {
+        guard let request = currentProcessingRequest else {
+            logger.warning("No current request to complete")
+            return
+        }
+
+        if let error = error {
+            request.setError(error)
+        } else if let result = result {
+            request.setCompleted(result: result, transcriptionText: transcriptionText)
+        }
+
+        // Clear current processing
+        currentProcessingRequest = nil
+
+        // Clean up completed requests after some time (keep last 5)
+        cleanupCompletedRequests()
+
+        logger.info("✅ Completed request: \(request.displayFilename) (Status: \(request.status.displayName))")
+
+        // Process next in queue
+        processNextInQueue()
+    }
+
+    /// Remove completed requests, keeping the most recent ones
+    private func cleanupCompletedRequests() {
+        let completedRequests = activeTranscriptions.filter { !$0.status.isActive }
+        if completedRequests.count > 5 {
+            // Remove oldest completed requests, keeping the 5 most recent
+            let sortedCompleted = completedRequests.sorted { $0.completedAt ?? Date.distantPast < $1.completedAt ?? Date.distantPast }
+            let toRemove = sortedCompleted.dropLast(5)
+
+            for request in toRemove {
+                if let index = activeTranscriptions.firstIndex(of: request) {
+                    activeTranscriptions.remove(at: index)
+                }
+            }
+        }
+    }
+
+    /// Cancel a queued request
+    func cancelQueuedRequest(_ request: APITranscriptionRequest) {
+        guard request.status == .queued else {
+            logger.warning("Cannot cancel request that is not queued: \(request.status.rawValue)")
+            return
+        }
+
+        // Remove from queue
+        if let queueIndex = transcriptionQueue.firstIndex(of: request) {
+            transcriptionQueue.remove(at: queueIndex)
+        }
+
+        // Update status
+        request.updateStatus(.cancelled, info: "Cancelled by user")
+
+        // Update remaining queue positions
+        updateQueueInfo()
+
+        logger.info("❌ Cancelled queued request: \(request.displayFilename)")
+    }
+
+    /// Force stop all processing and clear queue
     func forceStopAPIProcessing() {
-        self.isProcessingAPIRequest = false
-        self.currentAPIRequestInfo = nil
-        // Attempt to abort any in-flight Whisper computation immediately
+        // Cancel current processing request
+        if let current = currentProcessingRequest {
+            current.updateStatus(.cancelled, info: "Force stopped by user")
+        }
+        currentProcessingRequest = nil
+
+        // Cancel all queued requests
+        for request in transcriptionQueue {
+            request.updateStatus(.cancelled, info: "Force stopped by user")
+        }
+        transcriptionQueue.removeAll()
+
+        // Attempt to abort any in-flight Whisper computation
         Task { [weak self] in
             if let whisper = await self?.whisperState.whisperContext {
                 await whisper.requestAbortNow()
             }
         }
-        // Clear all active requests on force stop
+
+        // Clear legacy active requests tracking
         self.activeRequests.removeAll()
-        print("🛑 Force stopped stuck API transcription processing (abort signaled)")
+
+        logger.warning("🛑 Force stopped all API transcription processing")
+    }
+
+    /// Legacy method for backward compatibility
+    func setAPIProcessingState(isProcessing: Bool, info: String? = nil) {
+        // This method is kept for backward compatibility but the state is now managed by the queue system
+        if let request = currentProcessingRequest, let info = info {
+            request.updateProgress(request.progress, info: info)
+        }
     }
     
+    /// Legacy method - now checks the new queue system
     func isRequestActive(_ requestId: String) -> Bool {
+        // Check new queue system first
+        let inNewSystem = activeTranscriptions.contains { $0.requestId == requestId }
+        if inNewSystem {
+            return true
+        }
+        // Fall back to legacy system for backward compatibility
         return activeRequests.contains(requestId)
     }
-    
+
+    /// Legacy method - maintained for backward compatibility
     func addActiveRequest(_ requestId: String) {
         activeRequests.insert(requestId)
-        logger.info("📝 Added active request: \(requestId) (total active: \(self.activeRequests.count))")
+        logger.info("📝 Added legacy active request: \(requestId) (total legacy: \(self.activeRequests.count))")
     }
-    
+
+    /// Legacy method - maintained for backward compatibility
     func removeActiveRequest(_ requestId: String) {
         activeRequests.remove(requestId)
-        logger.info("✅ Removed active request: \(requestId) (total active: \(self.activeRequests.count))")
+        logger.info("✅ Removed legacy active request: \(requestId) (total legacy: \(self.activeRequests.count))")
     }
     
     func updateAPITranscriptionStats(audioDuration: TimeInterval) {

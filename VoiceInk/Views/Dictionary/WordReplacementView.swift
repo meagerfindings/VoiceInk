@@ -1,9 +1,5 @@
 import SwiftUI
 
-extension String: Identifiable {
-    public var id: String { self }
-}
-
 class WordReplacementManager: ObservableObject {
     @Published var replacements: [String: String] {
         didSet {
@@ -47,6 +43,7 @@ struct WordReplacementView: View {
     @State private var showAddReplacementModal = false
     @State private var showAlert = false
     @State private var editingOriginal: String? = nil
+    @State private var showEditModal = false
     
     @State private var alertMessage = ""
     
@@ -106,7 +103,10 @@ struct WordReplacementView: View {
                                     original: original,
                                     replacement: manager.replacements[original] ?? "",
                                     onDelete: { manager.removeReplacement(original: original) },
-                                    onEdit: { editingOriginal = original }
+                                    onEdit: {
+                                        editingOriginal = original
+                                        showEditModal = true
+                                    }
                                 )
                                 
                                 if original != manager.replacements.keys.sorted().last {
@@ -125,8 +125,10 @@ struct WordReplacementView: View {
             AddReplacementSheet(manager: manager)
         }
         // Edit existing replacement
-        .sheet(item: $editingOriginal) { original in
-            EditReplacementSheet(manager: manager, originalKey: original)
+        .sheet(isPresented: $showEditModal) {
+            if let original = editingOriginal {
+                EditReplacementSheet(manager: manager, originalKey: original)
+            }
         }
         
     }

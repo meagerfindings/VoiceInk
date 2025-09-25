@@ -19,21 +19,10 @@ struct MetricsView: View {
     
     var body: some View {
         VStack(spacing: 0) {
-            // API Processing Indicator
-            if apiServer.isProcessingAPIRequest, let info = apiServer.currentAPIRequestInfo {
-                APIProcessingIndicator(
-                    processingInfo: info,
-                    onStop: {
-                        apiServer.forceStopAPIProcessing()
-                    }
-                )
+            // API Transcriptions List
+            APITranscriptionsList()
                 .padding(.horizontal, 20)
                 .padding(.top, 16)
-                    .transition(.asymmetric(
-                        insertion: .move(edge: .top).combined(with: .opacity),
-                        removal: .move(edge: .top).combined(with: .opacity)
-                    ))
-            }
             
             // Main content
             Group {
@@ -47,7 +36,6 @@ struct MetricsView: View {
             }
         }
         .background(Color(.controlBackgroundColor))
-        .animation(.easeInOut(duration: 0.3), value: apiServer.isProcessingAPIRequest)
         .task {
             // Ensure the model context is ready
             hasLoadedData = true

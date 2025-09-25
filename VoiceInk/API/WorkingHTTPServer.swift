@@ -54,7 +54,8 @@ class WorkingHTTPServer {
     // Dependencies
     private let transcriptionProcessor: TranscriptionProcessor
     weak var delegate: WorkingHTTPServerDelegate?
-    
+    weak var apiServer: TranscriptionAPIServer?
+
     init(port: Int, allowNetworkAccess: Bool, transcriptionProcessor: TranscriptionProcessor) {
         self.port = port
         self.allowNetworkAccess = allowNetworkAccess
@@ -80,7 +81,7 @@ class WorkingHTTPServer {
     
     private func removeActiveRequest(_ requestId: String) {
         requestsQueue.sync {
-            activeRequests.remove(requestId)
+            _ = activeRequests.remove(requestId)
         }
     }
 
@@ -451,48 +452,155 @@ class WorkingHTTPServer {
     
     private func handleTranscriptionRequest(_ request: HTTPRequest, connectionId: String) async throws -> HTTPResponse {
         logger.info("🎤 CONN-\(connectionId): Processing transcription request, body size: \(request.body.count)")
-        
+
         guard let boundary = extractBoundary(from: request.headers["content-type"]) else {
             logger.error("🔴 CONN-\(connectionId): No boundary in content-type: \(request.headers["content-type"] ?? "nil")")
             return HTTPResponse.error(400, "Missing boundary in multipart/form-data")
         }
-        
+
         logger.debug("📋 CONN-\(connectionId): Extracting file with boundary: \(boundary)")
-        
+
         guard let fileResult = extractFileFromMultipart(request.body, boundary: boundary, connectionId: connectionId) else {
             logger.error("🔴 CONN-\(connectionId): Failed to extract file from multipart data")
             return HTTPResponse.error(400, "No file found in request")
         }
-        
+
         let fileData = fileResult.data
         let filename = fileResult.filename
-        
+
         logger.info("🎉 CONN-\(connectionId): File extracted successfully, size: \(fileData.count) bytes, filename: \(filename ?? "none")")
-        
-        // Check for duplicate request
+
         let requestId = generateRequestId(from: fileData, filename: filename)
+
+        // Use new queue system if available
+        if let apiServer = await MainActor.run(body: { self.apiServer }) {
+            logger.debug("🟢 CONN-\(connectionId): Using new queue system")
+
+            let queueRequest = await MainActor.run {
+                apiServer.enqueueTranscription(requestId: requestId, filename: filename, fileSize: fileData.count)
+            }
+
+            guard let queueRequest = queueRequest else {
+                if await MainActor.run(body: { apiServer.isRequestActive(requestId) }) {
+                    logger.warning("⚠️ CONN-\(connectionId): Duplicate request detected")
+                    return HTTPResponse.error(409, "Request already in progress")
+                } else {
+                    logger.error("🔴 CONN-\(connectionId): Queue is full")
+                    return HTTPResponse.error(503, "Server is too busy. Queue is full. Please try again later.")
+                }
+            }
+
+            // Store the audio data for processing when request reaches front of queue
+            Task { @MainActor in
+                // Process the transcription when it's this request's turn
+                await processQueuedTranscription(queueRequest: queueRequest, audioData: fileData, filename: filename, connectionId: connectionId)
+            }
+
+            // Return immediate response with queue information
+            let queueResponse = APIQueueResponse(
+                success: true,
+                requestId: requestId,
+                message: "Request queued successfully",
+                queuePosition: await MainActor.run { queueRequest.queuePosition },
+                estimatedWaitTime: await MainActor.run { queueRequest.estimatedWaitTime }
+            )
+
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = .prettyPrinted
+            let responseData = try encoder.encode(queueResponse)
+
+            let position = await MainActor.run { queueRequest.queuePosition }
+            logger.info("📤 CONN-\(connectionId): Returning queue response - Position: \(position)")
+            return HTTPResponse.success(data: responseData, contentType: "application/json")
+        } else {
+            // Fall back to old immediate processing system
+            logger.debug("⚠️ CONN-\(connectionId): API Server not available, falling back to immediate processing")
+            return await handleImmediateTranscription(requestId: requestId, fileData: fileData, filename: filename, connectionId: connectionId)
+        }
+    }
+
+    /// Process a queued transcription when it reaches the front of the queue
+    private func processQueuedTranscription(queueRequest: APITranscriptionRequest, audioData: Data, filename: String?, connectionId: String) async {
+        // Wait for this request to become the current processing request
+        while await MainActor.run(body: { apiServer?.currentProcessingRequest?.id != queueRequest.id }) {
+            // Check if request was cancelled
+            let status = await MainActor.run { queueRequest.status }
+            if status == .cancelled {
+                logger.info("❌ CONN-\(connectionId): Request was cancelled while waiting in queue")
+                return
+            }
+
+            // Wait a bit before checking again
+            try? await Task.sleep(nanoseconds: 1_000_000_000) // 1 second
+        }
+
+        logger.info("🔄 CONN-\(connectionId): Processing queued transcription: \(filename ?? "unknown")")
+
+        do {
+            // Update progress
+            await MainActor.run {
+                queueRequest.updateProgress(0.1, info: "Starting transcription...")
+            }
+
+            // Process transcription
+            let result = try await withTimeout(seconds: 900, transcriptionProcessor: transcriptionProcessor) { [self] in
+                try await transcriptionProcessor.transcribe(audioData: audioData, filename: filename)
+            }
+
+            // Extract transcription text for display
+            let transcriptionText: String?
+            if let jsonObject = try? JSONSerialization.jsonObject(with: result, options: []) as? [String: Any],
+               let text = jsonObject["text"] as? String {
+                transcriptionText = text
+            } else {
+                transcriptionText = nil
+            }
+
+            // Complete the request
+            await MainActor.run {
+                apiServer?.completeCurrentRequest(result: result, transcriptionText: transcriptionText, error: nil)
+            }
+
+            logger.info("✅ CONN-\(connectionId): Queued transcription completed successfully")
+
+        } catch {
+            logger.error("🔴 CONN-\(connectionId): Queued transcription failed: \(error.localizedDescription)")
+
+            let errorMessage: String
+            if error is WorkingHTTPTimeoutError {
+                errorMessage = "Transcription timeout: Request took longer than 15 minutes."
+            } else {
+                errorMessage = "Transcription failed: \(error.localizedDescription)"
+            }
+
+            await MainActor.run {
+                apiServer?.completeCurrentRequest(result: nil, transcriptionText: nil, error: errorMessage)
+            }
+        }
+    }
+
+    /// Fallback to immediate processing (legacy behavior)
+    private func handleImmediateTranscription(requestId: String, fileData: Data, filename: String?, connectionId: String) async -> HTTPResponse {
+        // Check for duplicate request using legacy system
         guard addActiveRequest(requestId) else {
-            logger.warning("⚠️ CONN-\(connectionId): Duplicate request detected for \(filename ?? "unknown") (\(fileData.count) bytes)")
+            logger.warning("⚠️ CONN-\(connectionId): Duplicate request detected (legacy system)")
             return HTTPResponse.error(409, "Request already in progress")
         }
-        
-        // Process transcription with proper async/await and timeout
-        logger.debug("🔄 CONN-\(connectionId): Starting transcription with timeout...")
 
         // Ensure cleanup happens regardless of success/failure
         defer {
             removeActiveRequest(requestId)
-            logger.debug("🧹 CONN-\(connectionId): Request tracking cleaned up")
+            logger.debug("🧹 CONN-\(connectionId): Legacy request tracking cleaned up")
         }
 
         let transcriptionResult: Data
         do {
-            transcriptionResult = try await withTimeout(seconds: 900, transcriptionProcessor: transcriptionProcessor) { [self] in // 15 minutes
+            transcriptionResult = try await withTimeout(seconds: 900, transcriptionProcessor: transcriptionProcessor) { [self] in
                 try await transcriptionProcessor.transcribe(audioData: fileData, filename: filename)
             }
-            logger.debug("✅ CONN-\(connectionId): Transcription completed, result size: \(transcriptionResult.count) bytes")
+            logger.debug("✅ CONN-\(connectionId): Legacy transcription completed, result size: \(transcriptionResult.count) bytes")
         } catch {
-            logger.error("🔴 CONN-\(connectionId): Transcription failed: \(error)")
+            logger.error("🔴 CONN-\(connectionId): Legacy transcription failed: \(error)")
 
             if error is WorkingHTTPTimeoutError {
                 return HTTPResponse.error(504, "Transcription timeout: Request took longer than 15 minutes. Try with smaller files or check server load.")
@@ -694,6 +802,25 @@ enum HTTPServerError: Error {
     case socketCreationFailed
     case bindFailed
     case listenFailed
+}
+
+// MARK: - API Queue Response
+
+/// Response sent to clients when a request is queued
+struct APIQueueResponse: Codable {
+    let success: Bool
+    let requestId: String
+    let message: String
+    let queuePosition: Int
+    let estimatedWaitTime: TimeInterval
+
+    enum CodingKeys: String, CodingKey {
+        case success
+        case requestId = "request_id"
+        case message
+        case queuePosition = "queue_position"
+        case estimatedWaitTime = "estimated_wait_time_seconds"
+    }
 }
 
 protocol WorkingHTTPServerDelegate: AnyObject {

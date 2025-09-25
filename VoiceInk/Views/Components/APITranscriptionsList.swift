@@ -10,28 +10,41 @@ struct APITranscriptionsList: View {
             if !apiServer.activeTranscriptions.isEmpty {
                 VStack(spacing: 12) {
                     // Header
-                    HStack {
-                        Text("API Transcriptions")
-                            .font(.system(size: 16, weight: .semibold))
-                            .foregroundColor(.primary)
+                    VStack(spacing: 8) {
+                        HStack {
+                            Text("API Transcriptions")
+                                .font(.system(size: 16, weight: .semibold))
+                                .foregroundColor(.primary)
 
-                        Spacer()
+                            Spacer()
 
-                        // Queue info
-                        if !apiServer.transcriptionQueue.isEmpty {
-                            Text("\(apiServer.transcriptionQueue.count) in queue")
-                                .font(.system(size: 12))
-                                .foregroundColor(.secondary)
-                        }
+                            // Battery status indicator
+                            batteryStatusView
+                            
+                            // Pause status and controls
+                            pauseControlsView
 
-                        // Force stop button if any active
-                        if apiServer.currentProcessingRequest != nil || !apiServer.transcriptionQueue.isEmpty {
-                            Button("Stop All") {
-                                apiServer.forceStopAPIProcessing()
+                            // Queue info
+                            if !apiServer.transcriptionQueue.isEmpty {
+                                Text("\(apiServer.transcriptionQueue.count) in queue")
+                                    .font(.system(size: 12))
+                                    .foregroundColor(.secondary)
                             }
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundColor(.red)
-                            .buttonStyle(PlainButtonStyle())
+
+                            // Force stop button if any active
+                            if apiServer.currentProcessingRequest != nil || !apiServer.transcriptionQueue.isEmpty {
+                                Button("Stop All") {
+                                    apiServer.forceStopAPIProcessing()
+                                }
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundColor(.red)
+                                .buttonStyle(PlainButtonStyle())
+                            }
+                        }
+                        
+                        // Battery override toggle (shown when on battery)
+                        if apiServer.isOnBattery {
+                            batteryOverrideView
                         }
                     }
 
@@ -75,6 +88,84 @@ struct APITranscriptionsList: View {
             }
         }
         .animation(.easeInOut(duration: 0.3), value: apiServer.activeTranscriptions.count)
+    }
+    
+    // MARK: - Header Components
+    
+    @ViewBuilder
+    private var batteryStatusView: some View {
+        HStack(spacing: 4) {
+            if apiServer.isOnBattery {
+                Image(systemName: "battery.25")
+                    .font(.system(size: 12))
+                    .foregroundColor(.orange)
+            } else {
+                Image(systemName: "bolt.fill")
+                    .font(.system(size: 12))
+                    .foregroundColor(.green)
+            }
+            
+            if apiServer.batteryPercent > 0 {
+                Text("\(Int(apiServer.batteryPercent))%")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(.secondary)
+            }
+        }
+        .help(apiServer.powerSourceDescription)
+    }
+    
+    @ViewBuilder
+    private var pauseControlsView: some View {
+        HStack(spacing: 8) {
+            // Pause/Resume button
+            Button(apiServer.isPausedEffective ? "Resume" : "Pause") {
+                apiServer.setManualPaused(!apiServer.isPausedEffective)
+            }
+            .font(.system(size: 12, weight: .medium))
+            .foregroundColor(apiServer.isPausedEffective ? .green : .orange)
+            .buttonStyle(PlainButtonStyle())
+            .help(apiServer.isPausedEffective ? "Resume API transcription processing" : "Pause API transcription processing")
+            
+            // Pause reason indicator
+            if apiServer.isPausedEffective {
+                Text("(\(apiServer.pauseReasonsSummary))")
+                    .font(.system(size: 11))
+                    .foregroundColor(.orange)
+            }
+        }
+    }
+    
+    @ViewBuilder
+    private var batteryOverrideView: some View {
+        HStack {
+            Spacer()
+            
+            HStack(spacing: 6) {
+                Toggle("Process on battery", isOn: Binding(
+                    get: { apiServer.batteryOverrideProcessOnBattery },
+                    set: { newValue in
+                        apiServer.batteryOverrideProcessOnBattery = newValue
+                    }
+                ))
+                .toggleStyle(SwitchToggleStyle(tint: .blue))
+                .scaleEffect(0.8)
+                
+                Text("Process on battery")
+                    .font(.system(size: 12))
+                    .foregroundColor(.secondary)
+            }
+            .help("Allow API transcriptions to continue when on battery power")
+        }
+        .padding(.horizontal, 4)
+        .padding(.vertical, 6)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(Color.orange.opacity(0.1))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6)
+                        .stroke(Color.orange.opacity(0.3), lineWidth: 1)
+                )
+        )
     }
 }
 

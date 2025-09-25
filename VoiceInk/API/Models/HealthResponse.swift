@@ -19,6 +19,9 @@ struct SystemInfo: Codable {
     let processorCount: Int
     let memoryUsageMB: Double
     let uptimeSeconds: TimeInterval
+    let powerSource: String?
+    let isOnBattery: Bool?
+    let batteryPercent: Double?
 }
 
 struct APIInfo: Codable {
@@ -35,4 +38,7 @@ struct TranscriptionInfo: Codable {
     let availableModels: [String]
     let enhancementEnabled: Bool
     let wordReplacementEnabled: Bool
+    let isQueuePaused: Bool?
+    let pauseReasons: [String]?
+    let batteryOverrideProcessOnBattery: Bool?
 }

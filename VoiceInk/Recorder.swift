@@ -3,6 +3,7 @@ import AVFoundation
 import CoreAudio
 import os
 
+
 @MainActor
 class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
     private var recorder: AVAudioRecorder?
@@ -76,6 +77,9 @@ class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
         UserDefaults.standard.set(String(currentDeviceID), forKey: "lastUsedMicrophoneDeviceID")
         
         hasDetectedAudioInCurrentSession = false
+        
+        // Notify that voice recording is about to start (for API queue pausing)
+        NotificationCenter.default.post(name: .voiceRecordingWillStart, object: self)
 
         let deviceID = deviceManager.getCurrentDevice()
         if deviceID != 0 {
@@ -156,6 +160,9 @@ class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
         recorder?.stop()
         recorder = nil
         audioMeter = AudioMeter(averagePower: 0, peakPower: 0)
+        
+        // Notify that voice recording has finished (for API queue resuming)
+        NotificationCenter.default.post(name: .voiceRecordingDidFinish, object: self)
         
         Task {
             await mediaController.unmuteSystemAudio()

@@ -1,7 +1,15 @@
 import Foundation
 import Network
 import SwiftData
+import Combine
 import os
+
+// MARK: - Voice Recording Notifications
+
+extension NSNotification.Name {
+    static let voiceRecordingWillStart = NSNotification.Name("VoiceRecordingWillStart")
+    static let voiceRecordingDidFinish = NSNotification.Name("VoiceRecordingDidFinish")
+}
 
 // MARK: - Error Types
 
@@ -743,6 +751,26 @@ class TranscriptionProcessor {
     }
 }
 
+// MARK: - Pause Policy
+
+/// Reasons why API transcription queue processing might be paused
+enum PauseReason: String, CaseIterable, Hashable {
+    case manual = "manual"
+    case voiceRecording = "voiceRecording"
+    case onBattery = "onBattery"
+    
+    var displayName: String {
+        switch self {
+        case .manual:
+            return "Manual"
+        case .voiceRecording:
+            return "Voice recording"
+        case .onBattery:
+            return "Battery"
+        }
+    }
+}
+
 // MARK: - Main API Server Coordinator
 
 /// API Server Coordinator - MainActor for UI state management only
@@ -758,6 +786,18 @@ class TranscriptionAPIServer: ObservableObject, WorkingHTTPServerDelegate {
     @Published var activeTranscriptions: [APITranscriptionRequest] = []
     @Published var transcriptionQueue: [APITranscriptionRequest] = []
     @Published var currentProcessingRequest: APITranscriptionRequest?
+    
+    // Pause policy state
+    @Published private var pauseReasons: Set<PauseReason> = []
+    @Published var batteryOverrideProcessOnBattery = false {
+        didSet {
+            UserDefaults.standard.set(batteryOverrideProcessOnBattery, forKey: "APIServerProcessOnBattery")
+            logger.info("Battery override updated: \(self.batteryOverrideProcessOnBattery)")
+            if batteryOverrideProcessOnBattery && pauseReasons.contains(.onBattery) {
+                resumeProcessingIfPossible()
+            }
+        }
+    }
 
     // Legacy properties for backward compatibility (computed from new state)
     var isProcessingAPIRequest: Bool {
@@ -766,6 +806,47 @@ class TranscriptionAPIServer: ObservableObject, WorkingHTTPServerDelegate {
 
     var currentAPIRequestInfo: String? {
         return currentProcessingRequest?.processingInfo
+    }
+    
+    // Computed pause state properties
+    var isPausedEffective: Bool {
+        let nonBatteryReasons = pauseReasons.subtracting([.onBattery])
+        return !nonBatteryReasons.isEmpty || (pauseReasons.contains(.onBattery) && !batteryOverrideProcessOnBattery)
+    }
+    
+    var pauseReasonsSummary: String {
+        if pauseReasons.isEmpty {
+            return ""
+        }
+        
+        var activeReasons: [String] = []
+        
+        // Add non-battery reasons first
+        for reason in pauseReasons {
+            if reason != .onBattery {
+                activeReasons.append(reason.displayName)
+            }
+        }
+        
+        // Add battery reason only if override is false
+        if pauseReasons.contains(.onBattery) && !batteryOverrideProcessOnBattery {
+            activeReasons.append(PauseReason.onBattery.displayName)
+        }
+        
+        return activeReasons.joined(separator: ", ")
+    }
+    
+    // Power state access for UI
+    var isOnBattery: Bool {
+        return powerModeService.isOnBattery
+    }
+    
+    var batteryPercent: Double {
+        return powerModeService.batteryPercent
+    }
+    
+    var powerSourceDescription: String {
+        return powerModeService.powerSourceDescription
     }
     
     // API statistics tracking
@@ -780,6 +861,13 @@ class TranscriptionAPIServer: ObservableObject, WorkingHTTPServerDelegate {
     private var httpServer: WorkingHTTPServer?
     private let transcriptionProcessor: TranscriptionProcessor
     private let whisperState: WhisperState
+    
+    // Power monitoring service
+    private let powerModeService = PowerModeService()
+    private var cancellables = Set<AnyCancellable>()
+    
+    // Thread safety guard for processNextInQueue
+    private var isProcessingNext = false
     
     // Stats tracking
     private var serverStartTime: Date?
@@ -799,6 +887,15 @@ class TranscriptionAPIServer: ObservableObject, WorkingHTTPServerDelegate {
         // Load API statistics from database
         loadAPIStatisticsFromDatabase(modelContext: modelContext)
         
+        // Load pause settings from UserDefaults
+        batteryOverrideProcessOnBattery = UserDefaults.standard.bool(forKey: "APIServerProcessOnBattery")
+        
+        // Load manual pause state
+        if UserDefaults.standard.bool(forKey: "APIServerManualPause") {
+            pauseReasons.insert(.manual)
+            logger.info("🔄 Restored manual pause state from UserDefaults")
+        }
+        
         // Listen for auto-dismiss notifications
         NotificationCenter.default.addObserver(
             self,
@@ -806,6 +903,108 @@ class TranscriptionAPIServer: ObservableObject, WorkingHTTPServerDelegate {
             name: .apiTranscriptionAutoDismiss,
             object: nil
         )
+        
+        // Listen for voice recording events
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleVoiceRecordingWillStart(_:)),
+            name: .voiceRecordingWillStart,
+            object: nil
+        )
+        
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleVoiceRecordingDidFinish(_:)),
+            name: .voiceRecordingDidFinish,
+            object: nil
+        )
+        
+        // Set up power monitoring and battery pause integration
+        setupPowerMonitoring()
+    }
+    
+    // MARK: - Pause Management
+    
+    /// Set manual pause state
+    func setManualPaused(_ paused: Bool) {
+        if paused {
+            pauseReasons.insert(.manual)
+            UserDefaults.standard.set(true, forKey: "APIServerManualPause")
+            logger.info("🔴 Manual pause enabled")
+        } else {
+            pauseReasons.remove(.manual)
+            UserDefaults.standard.set(false, forKey: "APIServerManualPause")
+            logger.info("🟢 Manual pause disabled")
+            resumeProcessingIfPossible()
+        }
+        updateQueueInfo() // Update queue display immediately
+    }
+    
+    /// Set voice recording priority pause state
+    func setVoicePriorityPaused(_ paused: Bool) {
+        if paused {
+            pauseReasons.insert(.voiceRecording)
+            logger.info("🔴 Voice recording pause enabled")
+        } else {
+            pauseReasons.remove(.voiceRecording)
+            logger.info("🟢 Voice recording pause disabled")
+            resumeProcessingIfPossible()
+        }
+        updateQueueInfo() // Update queue display immediately
+    }
+    
+    /// Set battery pause state
+    func setBatteryPaused(isOnBattery: Bool) {
+        if isOnBattery {
+            pauseReasons.insert(.onBattery)
+            logger.info("🔴 Battery pause enabled (override: \(self.batteryOverrideProcessOnBattery))")
+        } else {
+            pauseReasons.remove(.onBattery)
+            logger.info("🟢 Battery pause disabled (on AC power)")
+            resumeProcessingIfPossible()
+        }
+        updateQueueInfo() // Update queue display immediately
+    }
+    
+    /// Resume processing if conditions allow
+    private func resumeProcessingIfPossible() {
+        guard !isPausedEffective else {
+            logger.debug("Cannot resume - still paused: \(self.pauseReasonsSummary)")
+            return
+        }
+        
+        logger.info("🟢 Resuming API transcription processing")
+        processNextInQueue()
+    }
+    
+    /// Set up power monitoring and battery pause integration
+    private func setupPowerMonitoring() {
+        // Monitor power source changes
+        powerModeService.$isOnBattery
+            .removeDuplicates()
+            .sink { [weak self] isOnBattery in
+                Task { @MainActor in
+                    self?.setBatteryPaused(isOnBattery: isOnBattery)
+                }
+            }
+            .store(in: &cancellables)
+        
+        // Start monitoring immediately
+        powerModeService.startMonitoring()
+        
+        // Set initial battery pause state based on current power source and override setting
+        Task { @MainActor in
+            // Give power monitoring a moment to get initial state
+            try? await Task.sleep(nanoseconds: 100_000_000) // 0.1 second
+            
+            if powerModeService.isOnBattery && !batteryOverrideProcessOnBattery {
+                pauseReasons.insert(.onBattery)
+                updateQueueInfo()
+                logger.info("⚡ Initial battery pause applied (on battery, override disabled)")
+            }
+        }
+        
+        logger.info("✅ Power monitoring integration setup complete")
     }
     
     func start() {
@@ -848,6 +1047,8 @@ class TranscriptionAPIServer: ObservableObject, WorkingHTTPServerDelegate {
     func stop() {
         httpServer?.stop()
         httpServer = nil
+        powerModeService.stopMonitoring()
+        cancellables.removeAll()
         isRunning = false
         logger.info("API server coordinator stopped")
     }
@@ -1027,7 +1228,10 @@ class TranscriptionAPIServer: ObservableObject, WorkingHTTPServerDelegate {
                 osVersion: processInfo.operatingSystemVersionString,
                 processorCount: processInfo.processorCount,
                 memoryUsageMB: memoryUsage,
-                uptimeSeconds: uptime
+                uptimeSeconds: uptime,
+                powerSource: powerModeService.powerSourceDescription.isEmpty ? nil : powerModeService.powerSourceDescription,
+                isOnBattery: powerModeService.isOnBattery,
+                batteryPercent: powerModeService.batteryPercent > 0 ? powerModeService.batteryPercent : nil
             ),
             api: APIInfo(
                 endpoint: "http://\(UserDefaults.standard.bool(forKey: "APIServerAllowNetworkAccess") ? "0.0.0.0" : "localhost"):\(port)",
@@ -1041,7 +1245,10 @@ class TranscriptionAPIServer: ObservableObject, WorkingHTTPServerDelegate {
                 modelLoaded: modelLoaded,
                 availableModels: availableModels,
                 enhancementEnabled: await MainActor.run { whisperState.enhancementService?.isEnhancementEnabled ?? false },
-                wordReplacementEnabled: UserDefaults.standard.bool(forKey: "IsWordReplacementEnabled")
+                wordReplacementEnabled: UserDefaults.standard.bool(forKey: "IsWordReplacementEnabled"),
+                isQueuePaused: isPausedEffective,
+                pauseReasons: pauseReasons.isEmpty ? nil : pauseReasons.map { $0.displayName },
+                batteryOverrideProcessOnBattery: batteryOverrideProcessOnBattery
             ),
             capabilities: [
                 "speech-to-text",
@@ -1107,14 +1314,34 @@ class TranscriptionAPIServer: ObservableObject, WorkingHTTPServerDelegate {
 
         logger.info("🟢 Enqueued transcription: \(filename ?? "unknown") (Queue: \(self.transcriptionQueue.count))")
 
-        // Try to process next if no current processing
-        processNextInQueue()
+        // Try to process next if no current processing and not paused
+        if !isPausedEffective {
+            processNextInQueue()
+        } else {
+            logger.info("⏸️ Queue is paused (\(self.pauseReasonsSummary)) - request queued but not started")
+            updateQueueInfo() // Update to show paused state
+        }
 
         return request
     }
 
     /// Process the next request in the queue
     private func processNextInQueue() {
+        // Prevent reentrancy
+        guard !isProcessingNext else {
+            logger.debug("🔒 Preventing reentrancy in processNextInQueue")
+            return
+        }
+        isProcessingNext = true
+        defer { isProcessingNext = false }
+        
+        // Check if paused first
+        if isPausedEffective {
+            logger.debug("⏸️ Queue processing paused: \(self.pauseReasonsSummary)")
+            updateQueueInfo() // Update queue info to show paused reason
+            return
+        }
+        
         // Check if already processing something
         guard currentProcessingRequest == nil else {
             logger.debug("Already processing a request, queue will continue when complete")
@@ -1142,8 +1369,19 @@ class TranscriptionAPIServer: ObservableObject, WorkingHTTPServerDelegate {
     private func updateQueueInfo() {
         for (index, request) in transcriptionQueue.enumerated() {
             let position = index + 1
-            let estimatedWait = TimeInterval(position * 60) // Rough estimate: 1 minute per request
-            request.updateQueueInfo(position: position, estimatedWait: estimatedWait)
+            
+            if isPausedEffective {
+                // Show paused state with reason
+                let pauseInfo = pauseReasonsSummary.isEmpty ? "Paused" : "Paused: \(pauseReasonsSummary)"
+                request.updateQueueInfo(position: position, estimatedWait: 0)
+                if request.status == .queued {
+                    request.updateStatus(.queued, info: "\(pauseInfo). Position \(position) in queue")
+                }
+            } else {
+                // Normal operation - show estimated wait times
+                let estimatedWait = TimeInterval(position * 60) // Rough estimate: 1 minute per request
+                request.updateQueueInfo(position: position, estimatedWait: estimatedWait)
+            }
         }
     }
 
@@ -1321,5 +1559,17 @@ class TranscriptionAPIServer: ObservableObject, WorkingHTTPServerDelegate {
         } catch {
             print("Failed to load API statistics: \(error)")
         }
+    }
+    
+    /// Handle voice recording will start notification
+    @objc private func handleVoiceRecordingWillStart(_ notification: Notification) {
+        logger.info("🎤 Voice recording starting - pausing API queue")
+        setVoicePriorityPaused(true)
+    }
+    
+    /// Handle voice recording did finish notification
+    @objc private func handleVoiceRecordingDidFinish(_ notification: Notification) {
+        logger.info("🎤 Voice recording finished - resuming API queue if conditions allow")
+        setVoicePriorityPaused(false)
     }
 }

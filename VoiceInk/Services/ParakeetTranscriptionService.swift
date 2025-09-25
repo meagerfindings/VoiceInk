@@ -36,11 +36,13 @@ class ParakeetTranscriptionService: TranscriptionService {
     }
 
     func transcribe(audioURL: URL, model: any TranscriptionModel) async throws -> String {
+        // Ensure model is loaded and asrManager is available (thread-safe)
         if asrManager == nil || !isModelLoaded {
             try await loadModel()
         }
 
-		guard let asrManager = asrManager else {
+        // Double-check after potential loading
+		guard let asrManager = self.asrManager, isModelLoaded else {
 			throw ASRError.notInitialized
 		}
         
@@ -83,14 +85,18 @@ class ParakeetTranscriptionService: TranscriptionService {
         }
 
         let result = try await asrManager.transcribe(speechAudio)
-		
-		Task {
-			asrManager.cleanup()
-			isModelLoaded = false
-			logger.notice("🦜 Parakeet ASR models cleaned up from memory")
-		}
-        
         let text = result.text
+
+        // Cleanup after we've extracted the text to avoid use-after-free
+        // Run cleanup on a separate task with proper error handling
+        Task.detached { [weak self] in
+            try? await Task.sleep(for: .milliseconds(100)) // Brief delay to ensure result is fully processed
+            await MainActor.run {
+                asrManager.cleanup()
+                self?.isModelLoaded = false
+                self?.logger.notice("🦜 Parakeet ASR models cleaned up from memory")
+            }
+        }
 
         return text
     }

@@ -1,0 +1,37 @@
+Thu Sep 25 08:22:02 MDT 2025: Starting comprehensive API tests
+08:22:02: Testing health endpoint...
+08:22:02: Health check successful: {"timestamp":"2025-09-25T14:22:02Z","version":"2.0-working-http","status":"healthy","service":"VoiceInk API"}
+08:22:02: Creating test files for error handling...
+08:22:02: Testing transcription: test_audio.mp3 (.06MB)
+08:22:02: TIMEOUT: test_audio.mp3 after 20 minutes
+08:22:02: Testing transcription: test_30sec.mp3 (.48MB)
+08:22:02: TIMEOUT: test_30sec.mp3 after 20 minutes
+08:22:02: Testing transcription: test_1min.mp3 (.91MB)
+08:22:02: TIMEOUT: test_1min.mp3 after 20 minutes
+08:22:02: Testing transcription: test_1min_podcast.mp3 (.88MB)
+08:22:02: TIMEOUT: test_1min_podcast.mp3 after 20 minutes
+08:22:02: Testing transcription: test_2min.mp3 (1.68MB)
+08:22:02: TIMEOUT: test_2min.mp3 after 20 minutes
+08:22:02: Testing transcription: test_5min.mp3 (4.08MB)
+08:22:02: TIMEOUT: test_5min.mp3 after 20 minutes
+08:22:02: Testing transcription: mp3_7m50.mp3 (7.17MB)
+08:22:02: TIMEOUT: mp3_7m50.mp3 after 20 minutes
+08:22:02: Testing transcription: long_8min.mp3 (9.96MB)
+08:22:02: TIMEOUT: long_8min.mp3 after 20 minutes
+08:22:02: Testing transcription: test_large.mp3 (20.00MB)
+08:22:02: TIMEOUT: test_large.mp3 after 20 minutes
+08:22:02: Testing transcription: RPF0154-529_Plans_Pt_2.mp3 (32.72MB)
+08:22:02: TIMEOUT: RPF0154-529_Plans_Pt_2.mp3 after 20 minutes
+08:22:02: Testing error handling with malformed files
+08:22:02: Testing transcription: fake_mp3.mp3 (0MB)
+08:22:02: TIMEOUT: fake_mp3.mp3 after 20 minutes
+08:22:02: Testing transcription: null_bytes.mp3 (0MB)
+08:22:03: TIMEOUT: null_bytes.mp3 after 20 minutes
+08:22:03: Testing transcription: empty.mp3 (0MB)
+08:22:03: TIMEOUT: empty.mp3 after 20 minutes
+08:22:03: Starting concurrent test with 2 requests using test_audio.mp3
+08:22:03: Started concurrent request 1 (PID: 22527)
+08:22:03: Started concurrent request 2 (PID: 22537)
+08:22:03: Concurrent test completed in 0s
+08:22:03: Test summary: 13 total, 0 successful, 13 failed
+08:22:03: Testing completed

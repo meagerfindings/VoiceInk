@@ -21,6 +21,10 @@ enum APITranscriptionStatus: String, CaseIterable {
     var isActive: Bool {
         return self == .queued || self == .processing
     }
+    
+    var isTerminal: Bool {
+        return self == .completed || self == .failed || self == .cancelled
+    }
 }
 
 /// Model representing an API transcription request in the queue/processing system
@@ -40,6 +44,14 @@ class APITranscriptionRequest: ObservableObject, Identifiable {
     let queuedAt: Date = Date()
     var startedAt: Date?
     var completedAt: Date?
+    
+    // Auto-dismiss functionality
+    @Published var terminalCompletedAt: Date? // When first entered terminal state
+    @Published var autoDismissAt: Date? // Absolute deadline for auto-dismiss
+    @Published var isUserInteracting: Bool = false // Pause auto-dismiss during interaction
+    @Published var isPinned: Bool = false // User has pinned this item
+    private var autoDismissRemainingSeconds: TimeInterval? // Cached when paused
+    private var interactionReasons: Set<String> = [] // Track multiple interaction reasons
 
     // Queue position tracking
     @Published var queuePosition: Int = 0
@@ -66,6 +78,7 @@ class APITranscriptionRequest: ObservableObject, Identifiable {
     /// Update the request status
     func updateStatus(_ newStatus: APITranscriptionStatus, info: String? = nil) {
         DispatchQueue.main.async {
+            let wasTerminal = self.status.isTerminal
             self.status = newStatus
 
             if let info = info {
@@ -84,6 +97,11 @@ class APITranscriptionRequest: ObservableObject, Identifiable {
             case .queued:
                 break // Keep existing info
             }
+            
+            // Schedule auto-dismiss when first entering a terminal state
+            if !wasTerminal && newStatus.isTerminal {
+                self.markTerminal(status: newStatus)
+            }
         }
     }
 
@@ -100,16 +118,25 @@ class APITranscriptionRequest: ObservableObject, Identifiable {
     /// Set error message and mark as failed
     func setError(_ message: String) {
         DispatchQueue.main.async {
+            let wasTerminal = self.status.isTerminal
+            
             self.errorMessage = message
             self.status = .failed
             self.processingInfo = "Failed: \(message)"
             self.completedAt = Date()
+            
+            // Schedule auto-dismiss when first entering failed state
+            if !wasTerminal {
+                self.markTerminal(status: .failed)
+            }
         }
     }
 
     /// Mark as completed with result
     func setCompleted(result: Data, transcriptionText: String?) {
         DispatchQueue.main.async {
+            let wasTerminal = self.status.isTerminal
+            
             self.result = result
             self.transcriptionText = transcriptionText
             self.status = .completed
@@ -120,6 +147,11 @@ class APITranscriptionRequest: ObservableObject, Identifiable {
                 self.processingInfo = "Completed: \(filename)"
             } else {
                 self.processingInfo = "Transcription completed"
+            }
+            
+            // Schedule auto-dismiss when first entering completed state
+            if !wasTerminal {
+                self.markTerminal(status: .completed)
             }
         }
     }
@@ -172,6 +204,126 @@ class APITranscriptionRequest: ObservableObject, Identifiable {
             }
         }
     }
+    
+    // MARK: - Auto-Dismiss Management
+    
+    /// Mark this request as entering a terminal state and schedule auto-dismiss
+    /// Safe to call multiple times - will only set timestamp on first call
+    func markTerminal(status: APITranscriptionStatus) {
+        guard status.isTerminal else { return }
+        
+        Task { @MainActor in
+            // Only set the terminal timestamp once
+            if self.terminalCompletedAt == nil {
+                self.terminalCompletedAt = Date()
+                self.scheduleAutoDismiss()
+            }
+        }
+    }
+    
+    /// Schedule auto-dismiss with AutoDismissManager
+    @MainActor
+    private func scheduleAutoDismiss() {
+        guard !isPinned, let terminalTime = terminalCompletedAt else { return }
+        
+        let deadlineMs = (terminalTime.timeIntervalSince1970 + AutoDismissManager.autoDismissDelayMs / 1000.0) * 1000.0
+        self.autoDismissAt = Date(timeIntervalSince1970: deadlineMs / 1000.0)
+        
+        AutoDismissManager.shared.register(
+            id: self.id.uuidString,
+            deadlineMs: deadlineMs
+        ) { [weak self] in
+            Task { @MainActor in
+                self?.handleAutoDismiss()
+            }
+        }
+    }
+    
+    /// Pause auto-dismiss due to user interaction
+    func pauseAutoDismiss(reason: String) {
+        DispatchQueue.main.async {
+            let wasEmpty = self.interactionReasons.isEmpty
+            self.interactionReasons.insert(reason)
+            
+            if wasEmpty && !self.interactionReasons.isEmpty {
+                self.isUserInteracting = true
+                
+                Task { @MainActor in
+                    AutoDismissManager.shared.pause(id: self.id.uuidString)
+                }
+            }
+        }
+    }
+    
+    /// Resume auto-dismiss when user interaction ends
+    func resumeAutoDismiss(reason: String) {
+        DispatchQueue.main.async {
+            self.interactionReasons.remove(reason)
+            
+            if self.interactionReasons.isEmpty {
+                self.isUserInteracting = false
+                
+                Task { @MainActor in
+                    AutoDismissManager.shared.resume(id: self.id.uuidString)
+                }
+            }
+        }
+    }
+    
+    /// Clear all auto-dismiss state (called on manual removal or pin)
+    func clearAutoDismiss() {
+        DispatchQueue.main.async {
+            self.terminalCompletedAt = nil
+            self.autoDismissAt = nil
+            self.isUserInteracting = false
+            self.interactionReasons.removeAll()
+            
+            Task { @MainActor in
+                AutoDismissManager.shared.unregister(id: self.id.uuidString)
+            }
+        }
+    }
+    
+    /// Pin/unpin this item to prevent auto-dismiss
+    func setPinned(_ pinned: Bool) {
+        DispatchQueue.main.async {
+            self.isPinned = pinned
+            
+            if pinned {
+                self.clearAutoDismiss()
+            } else if let status = APITranscriptionStatus(rawValue: self.status.rawValue),
+                      status.isTerminal {
+                // Re-schedule auto-dismiss if unpinned and in terminal state
+                self.markTerminal(status: status)
+            }
+        }
+    }
+    
+    /// Get remaining auto-dismiss time for UI display
+    var remainingAutoDismissTime: TimeInterval? {
+        guard !isPinned, let autoDismissAt = autoDismissAt else { return nil }
+        
+        if isUserInteracting {
+            // When paused, compute from cached remaining time if available
+            // We'll use the cached value instead of calling the manager
+            let now = Date().timeIntervalSince1970 * 1000
+            let elapsed = now - (terminalCompletedAt?.timeIntervalSince1970 ?? 0) * 1000
+            return max(0, (AutoDismissManager.autoDismissDelayMs - elapsed) / 1000.0)
+        } else {
+            // When active, compute remaining time
+            return max(0, autoDismissAt.timeIntervalSinceNow)
+        }
+    }
+    
+    /// Handle the actual auto-dismiss when timer fires
+    private func handleAutoDismiss() {
+        // Post notification for removal - this will be handled by TranscriptionAPIServer
+        NotificationCenter.default.post(
+            name: .apiTranscriptionAutoDismiss,
+            object: nil,
+            userInfo: ["requestId": self.id.uuidString, "reason": "auto_dismiss"]
+        )
+    }
 }
 
 /// Extension for Equatable to allow comparison in arrays
@@ -186,4 +338,10 @@ extension APITranscriptionRequest: Hashable {
     func hash(into hasher: inout Hasher) {
         hasher.combine(id)
     }
+}
+
+// MARK: - Notifications
+
+extension Notification.Name {
+    static let apiTranscriptionAutoDismiss = Notification.Name("apiTranscriptionAutoDismiss")
 }

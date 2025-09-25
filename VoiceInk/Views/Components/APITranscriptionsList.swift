@@ -35,23 +35,28 @@ struct APITranscriptionsList: View {
                         }
                     }
 
-                    // List of transcriptions
-                    LazyVStack(spacing: 8) {
-                        ForEach(apiServer.activeTranscriptions) { request in
-                            APITranscriptionCard(
-                                request: request,
-                                onCancel: { request in
-                                    if request.status == .queued {
-                                        apiServer.cancelQueuedRequest(request)
+                    // List of transcriptions (scrollable container)
+                    ScrollView(.vertical, showsIndicators: true) {
+                        LazyVStack(spacing: 8) {
+                            ForEach(apiServer.activeTranscriptions) { request in
+                                APITranscriptionCard(
+                                    request: request,
+                                    onCancel: { request in
+                                        if request.status == .queued {
+                                            apiServer.cancelQueuedRequest(request)
+                                        }
                                     }
-                                }
-                            )
-                            .transition(.asymmetric(
-                                insertion: .move(edge: .top).combined(with: .opacity),
-                                removal: .move(edge: .trailing).combined(with: .opacity)
-                            ))
+                                )
+                                .transition(.asymmetric(
+                                    insertion: .move(edge: .top).combined(with: .opacity),
+                                    removal: .move(edge: .trailing).combined(with: .opacity)
+                                ))
+                            }
                         }
+                        .padding(.vertical, 4) // Prevent clipping of last item
                     }
+                    .frame(maxHeight: 300) // Limit height to trigger scrolling
+                    .clipped()
                 }
                 .padding(.horizontal, 20)
                 .padding(.vertical, 16)
@@ -77,6 +82,8 @@ struct APITranscriptionCard: View {
     @ObservedObject var request: APITranscriptionRequest
     let onCancel: (APITranscriptionRequest) -> Void
     @State private var animationRotation: Double = 0
+    @State private var isHovered: Bool = false
+    @State private var copyGraceTimer: Timer?
 
     var body: some View {
         HStack(spacing: 12) {
@@ -130,6 +137,11 @@ struct APITranscriptionCard: View {
 
                     Spacer()
 
+                    // Auto-dismiss countdown for terminal states
+                    if request.status.isTerminal && !request.isPinned {
+                        autoDismissCountdown
+                    }
+                    
                     // Queue position for queued items
                     if request.status == .queued && request.queuePosition > 0 {
                         Text("Position #\(request.queuePosition)")
@@ -164,6 +176,19 @@ struct APITranscriptionCard: View {
                     .buttonStyle(PlainButtonStyle())
                     .help("Copy transcription to clipboard")
                 }
+                
+                // Pin/unpin button for completed items
+                if request.status.isTerminal {
+                    Button(action: {
+                        request.setPinned(!request.isPinned)
+                    }) {
+                        Image(systemName: request.isPinned ? "pin.fill" : "pin")
+                            .font(.system(size: 16))
+                            .foregroundColor(request.isPinned ? .orange : .gray)
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                    .help(request.isPinned ? "Unpin (allow auto-dismiss)" : "Pin (prevent auto-dismiss)")
+                }
             }
         }
         .padding(.horizontal, 12)
@@ -176,6 +201,20 @@ struct APITranscriptionCard: View {
                         .stroke(borderColorForStatus(request.status), lineWidth: 1)
                 )
         )
+        .onHover { hovering in
+            isHovered = hovering
+            
+            if hovering {
+                request.pauseAutoDismiss(reason: "hover")
+            } else {
+                // Debounce hover exit to prevent flicker
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                    if !self.isHovered {
+                        request.resumeAutoDismiss(reason: "hover")
+                    }
+                }
+            }
+        }
         .onAppear {
             if request.status == .processing {
                 startProgressAnimation()
@@ -185,6 +224,10 @@ struct APITranscriptionCard: View {
             if newStatus == .processing {
                 startProgressAnimation()
             }
+        }
+        .onDisappear {
+            // Clean up timers when card is removed
+            copyGraceTimer?.invalidate()
         }
     }
 
@@ -226,6 +269,25 @@ struct APITranscriptionCard: View {
                 RoundedRectangle(cornerRadius: 4)
                     .fill(badgeColorForStatus(request.status))
             )
+    }
+    
+    @ViewBuilder
+    private var autoDismissCountdown: some View {
+        if let remainingTime = request.remainingAutoDismissTime, remainingTime > 0 {
+            let seconds = Int(remainingTime.rounded())
+            let color: Color = request.isUserInteracting ? .orange : .gray
+            
+            HStack(spacing: 4) {
+                Image(systemName: request.isUserInteracting ? "pause.circle" : "timer")
+                    .font(.system(size: 10))
+                    .foregroundColor(color)
+                
+                Text(request.isUserInteracting ? "Paused" : "\(seconds)s")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(color)
+            }
+            .help(request.isUserInteracting ? "Auto-dismiss paused during interaction" : "Auto-dismiss in \(seconds) seconds")
+        }
     }
 
     private func startProgressAnimation() {
@@ -282,7 +344,18 @@ struct APITranscriptionCard: View {
     private func copyTranscriptionText(_ text: String) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
-
+        
+        // Pause auto-dismiss during copy action with grace period
+        request.pauseAutoDismiss(reason: "copy")
+        
+        // Clear any existing grace timer
+        copyGraceTimer?.invalidate()
+        
+        // Resume auto-dismiss after a grace period
+        copyGraceTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: false) { _ in
+            request.resumeAutoDismiss(reason: "copy")
+        }
+        
         // TODO: Show a brief success message
         print("Copied transcription to clipboard")
     }

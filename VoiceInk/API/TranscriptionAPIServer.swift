@@ -798,6 +798,14 @@ class TranscriptionAPIServer: ObservableObject, WorkingHTTPServerDelegate {
         
         // Load API statistics from database
         loadAPIStatisticsFromDatabase(modelContext: modelContext)
+        
+        // Listen for auto-dismiss notifications
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleAutoDismissNotification(_:)),
+            name: .apiTranscriptionAutoDismiss,
+            object: nil
+        )
     }
     
     func start() {
@@ -1173,10 +1181,47 @@ class TranscriptionAPIServer: ObservableObject, WorkingHTTPServerDelegate {
             let toRemove = sortedCompleted.dropLast(5)
 
             for request in toRemove {
-                if let index = activeTranscriptions.firstIndex(of: request) {
-                    activeTranscriptions.remove(at: index)
-                }
+                removeRequest(request, reason: "cleanup_overflow")
             }
+        }
+    }
+    
+    /// Centralized request removal function
+    private func removeRequest(_ request: APITranscriptionRequest, reason: String) {
+        logger.info("🗑️ Removing request \(request.displayFilename) (reason: \(reason))")
+        
+        // Clear auto-dismiss state
+        request.clearAutoDismiss()
+        
+        // Remove from active transcriptions
+        if let index = activeTranscriptions.firstIndex(of: request) {
+            activeTranscriptions.remove(at: index)
+        }
+        
+        // Remove from queue if present
+        if let queueIndex = transcriptionQueue.firstIndex(of: request) {
+            transcriptionQueue.remove(at: queueIndex)
+        }
+        
+        // Clear as current processing if this is the active request
+        if currentProcessingRequest?.id == request.id {
+            currentProcessingRequest = nil
+        }
+    }
+    
+    /// Handle auto-dismiss notification
+    @objc private func handleAutoDismissNotification(_ notification: Notification) {
+        guard let userInfo = notification.userInfo,
+              let requestIdString = userInfo["requestId"] as? String,
+              let requestId = UUID(uuidString: requestIdString) else {
+            logger.warning("Invalid auto-dismiss notification received")
+            return
+        }
+        
+        // Find the request to remove
+        if let request = activeTranscriptions.first(where: { $0.id == requestId }) {
+            removeRequest(request, reason: "auto_dismiss")
+            logger.info("🔥 Auto-dismissed request: \(request.displayFilename)")
         }
     }
 
@@ -1187,13 +1232,11 @@ class TranscriptionAPIServer: ObservableObject, WorkingHTTPServerDelegate {
             return
         }
 
-        // Remove from queue
-        if let queueIndex = transcriptionQueue.firstIndex(of: request) {
-            transcriptionQueue.remove(at: queueIndex)
-        }
-
-        // Update status
+        // Update status first
         request.updateStatus(.cancelled, info: "Cancelled by user")
+        
+        // Remove using centralized function
+        removeRequest(request, reason: "user_cancel")
 
         // Update remaining queue positions
         updateQueueInfo()

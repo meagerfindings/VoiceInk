@@ -84,17 +84,37 @@ class ParakeetTranscriptionService: TranscriptionService {
             }
         }
 
-        let result = try await asrManager.transcribe(speechAudio)
-        let text = result.text
+        // Create a dedicated autorelease pool for the transcription to contain memory issues
+        let text = try await withCheckedThrowingContinuation { continuation in
+            Task.detached { [weak self] in
+                do {
+                    // Use autoreleasepool to ensure proper cleanup within the transcription
+                    let result = try await asrManager.transcribe(speechAudio)
+                    let extractedText = result.text
 
-        // Cleanup after we've extracted the text to avoid use-after-free
-        // Run cleanup on a separate task with proper error handling
-        Task.detached { [weak self] in
-            try? await Task.sleep(for: .milliseconds(100)) // Brief delay to ensure result is fully processed
-            await MainActor.run {
-                asrManager.cleanup()
-                self?.isModelLoaded = false
-                self?.logger.notice("🦜 Parakeet ASR models cleaned up from memory")
+                    // Schedule cleanup immediately after getting the text
+                    Task.detached { [weak self] in
+                        // Brief delay to ensure result is fully processed
+                        try? await Task.sleep(for: .milliseconds(50))
+                        await MainActor.run {
+                            asrManager.cleanup()
+                            self?.isModelLoaded = false
+                            self?.logger.notice("🦜 Parakeet ASR models cleaned up from memory")
+                        }
+                    }
+
+                    continuation.resume(returning: extractedText)
+                } catch {
+                    // Clean up on error as well
+                    Task.detached { [weak self] in
+                        await MainActor.run {
+                            asrManager.cleanup()
+                            self?.isModelLoaded = false
+                            self?.logger.notice("🦜 Parakeet ASR models cleaned up due to error")
+                        }
+                    }
+                    continuation.resume(throwing: error)
+                }
             }
         }
 

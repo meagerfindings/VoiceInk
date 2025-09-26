@@ -861,7 +861,7 @@ class TranscriptionAPIServer: ObservableObject, WorkingHTTPServerDelegate {
     // Network handling - runs on background queues
     private var httpServer: WorkingHTTPServer?
     private let transcriptionProcessor: TranscriptionProcessor
-    private let whisperState: WhisperState
+    let whisperState: WhisperState
     
     // Power monitoring service
     private let powerModeService = PowerModeService()

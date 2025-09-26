@@ -601,9 +601,15 @@ class WorkingHTTPServer {
             ]
         }
 
+        let debugResponse = DebugResponse(
+            success: true,
+            debug: debugInfo,
+            timestamp: ISO8601DateFormatter().string(from: Date())
+        )
+
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        let responseData = try encoder.encode(["success": true, "debug": debugInfo, "timestamp": ISO8601DateFormatter().string(from: Date())])
+        let responseData = try encoder.encode(debugResponse)
 
         return HTTPResponse.success(data: responseData, contentType: "application/json")
     }
@@ -988,4 +994,98 @@ protocol WorkingHTTPServerDelegate: AnyObject {
     func httpServer(_ server: WorkingHTTPServer, didChangeState isRunning: Bool)
     func httpServer(_ server: WorkingHTTPServer, didEncounterError error: String)
     func httpServer(_ server: WorkingHTTPServer, didProcessRequest stats: RequestStats)
+}
+
+// MARK: - Debug Response Types
+
+struct DebugResponse: Codable {
+    let success: Bool
+    let debug: [String: Any]
+    let timestamp: String
+
+    private enum CodingKeys: String, CodingKey {
+        case success, debug, timestamp
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(success, forKey: .success)
+        try container.encode(timestamp, forKey: .timestamp)
+
+        // Handle debug dictionary with mixed types
+        var debugContainer = container.nestedContainer(keyedBy: DynamicCodingKeys.self, forKey: .debug)
+        for (key, value) in debug {
+            let codingKey = DynamicCodingKeys(stringValue: key)!
+            if let stringValue = value as? String {
+                try debugContainer.encode(stringValue, forKey: codingKey)
+            } else if let intValue = value as? Int {
+                try debugContainer.encode(intValue, forKey: codingKey)
+            } else if let doubleValue = value as? Double {
+                try debugContainer.encode(doubleValue, forKey: codingKey)
+            } else if let boolValue = value as? Bool {
+                try debugContainer.encode(boolValue, forKey: codingKey)
+            } else if let dictValue = value as? [String: Any] {
+                try debugContainer.encode(AnyCodable(dictValue), forKey: codingKey)
+            } else if let arrayValue = value as? [Any] {
+                try debugContainer.encode(AnyCodable(arrayValue), forKey: codingKey)
+            }
+        }
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        success = try container.decode(Bool.self, forKey: .success)
+        timestamp = try container.decode(String.self, forKey: .timestamp)
+        debug = [:] // Not used for decoding in this context
+    }
+
+    init(success: Bool, debug: [String: Any], timestamp: String) {
+        self.success = success
+        self.debug = debug
+        self.timestamp = timestamp
+    }
+}
+
+struct AnyCodable: Codable {
+    private let value: Any
+
+    init(_ value: Any) {
+        self.value = value
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        if let stringValue = value as? String {
+            try container.encode(stringValue)
+        } else if let intValue = value as? Int {
+            try container.encode(intValue)
+        } else if let doubleValue = value as? Double {
+            try container.encode(doubleValue)
+        } else if let boolValue = value as? Bool {
+            try container.encode(boolValue)
+        } else if let dictValue = value as? [String: Any] {
+            let dict = dictValue.mapValues { AnyCodable($0) }
+            try container.encode(dict)
+        } else if let arrayValue = value as? [Any] {
+            let array = arrayValue.map { AnyCodable($0) }
+            try container.encode(array)
+        } else {
+            throw EncodingError.invalidValue(value, EncodingError.Context(codingPath: encoder.codingPath, debugDescription: "Cannot encode value of type \(type(of: value))"))
+        }
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let stringValue = try? container.decode(String.self) {
+            value = stringValue
+        } else if let intValue = try? container.decode(Int.self) {
+            value = intValue
+        } else if let doubleValue = try? container.decode(Double.self) {
+            value = doubleValue
+        } else if let boolValue = try? container.decode(Bool.self) {
+            value = boolValue
+        } else {
+            throw DecodingError.dataCorruptedError(in: container, debugDescription: "Cannot decode AnyCodable")
+        }
+    }
 }

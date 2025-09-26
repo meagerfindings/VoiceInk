@@ -247,7 +247,7 @@ class TranscriptionAPIHandler {
         }
         
         if parakeetTranscriptionService == nil && currentModel.provider == .parakeet {
-            parakeetTranscriptionService = await ParakeetTranscriptionService(
+            parakeetTranscriptionService = ParakeetTranscriptionService(
                 customModelsDirectory: whisperState.parakeetModelsDirectory
             )
         }
@@ -340,8 +340,16 @@ class TranscriptionAPIHandler {
                 let baseTimeout: TimeInterval = 10800 // 3 hours ceiling
                 let maxTranscriptionTime: TimeInterval = min(baseTimeout, max(120, duration * 4))
                 logger.info("🕒 Setting Parakeet transcription timeout to \(String(format: "%.1f", maxTranscriptionTime)) seconds for \(String(format: "%.1f", duration))s audio")
-                text = try await withTranscriptionTimeout(seconds: maxTranscriptionTime) {
-                    try await parakeetTranscriptionService!.transcribe(audioURL: processedURL, model: currentModel)
+
+                // Hold a strong local reference to avoid deallocation races across concurrency boundaries
+                guard let service = self.parakeetTranscriptionService else {
+                    throw APIError.transcriptionFailed("Parakeet service not initialized")
+                }
+                let model = currentModel
+                let audioURL = processedURL
+
+                text = try await withTranscriptionTimeout(seconds: maxTranscriptionTime, whisperState: whisperState) {
+                    try await service.transcribe(audioURL: audioURL, model: model)
                 }
             } catch is TranscriptionTimeoutError {
                 logger.error("🔴 Parakeet transcription timed out after duration-based limit")

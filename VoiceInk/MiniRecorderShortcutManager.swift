@@ -280,11 +280,19 @@ class MiniRecorderShortcutManager: ObservableObject {
     
     deinit {
         visibilityTask?.cancel()
-        Task { @MainActor in
-            deactivateEscapeShortcut()
-            deactivateCancelShortcut()
-            removeEnhancementShortcut()
-            removePowerModeShortcuts()
-        }
+        // Perform minimal global cleanup without crossing actor boundaries.
+        // Remove registered shortcuts directly.
+        KeyboardShortcuts.setShortcut(nil, for: .escapeRecorder)
+        KeyboardShortcuts.setShortcut(nil, for: .toggleEnhancement)
+        KeyboardShortcuts.setShortcut(nil, for: .selectPowerMode1)
+        KeyboardShortcuts.setShortcut(nil, for: .selectPowerMode2)
+        KeyboardShortcuts.setShortcut(nil, for: .selectPowerMode3)
+        KeyboardShortcuts.setShortcut(nil, for: .selectPowerMode4)
+        KeyboardShortcuts.setShortcut(nil, for: .selectPowerMode5)
+        KeyboardShortcuts.setShortcut(nil, for: .selectPowerMode6)
+        KeyboardShortcuts.setShortcut(nil, for: .selectPowerMode7)
+        KeyboardShortcuts.setShortcut(nil, for: .selectPowerMode8)
+        KeyboardShortcuts.setShortcut(nil, for: .selectPowerMode9)
+        KeyboardShortcuts.setShortcut(nil, for: .selectPowerMode10)
     }
 } 

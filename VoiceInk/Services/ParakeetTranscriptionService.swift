@@ -6,11 +6,11 @@ import os.log
 
 
 
-class ParakeetTranscriptionService: TranscriptionService {
+actor ParakeetTranscriptionService: TranscriptionService {
     private var asrManager: AsrManager?
     private var vadManager: VadManager?
     private let customModelsDirectory: URL?
-    @Published var isModelLoaded = false
+    var isModelLoaded = false
     private let logger = Logger(subsystem: "com.voiceink.app", category: "ParakeetTranscriptionService")
     
     init(customModelsDirectory: URL? = nil) {
@@ -70,7 +70,6 @@ class ParakeetTranscriptionService: TranscriptionService {
         // Convert to 16k mono float if needed
         let targetFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: sr, channels: 1, interleaved: false)!
         let needsConvert = inputFile.fileFormat.sampleRate != sr || inputFile.fileFormat.channelCount != 1 || inputFile.fileFormat.commonFormat != .pcmFormatFloat32
-        let converter = needsConvert ? AVAudioConverter(from: inputFile.fileFormat, to: targetFormat) : nil
 
         var combinedText = ""
         var currentFrame: AVAudioFramePosition = 0
@@ -86,18 +85,37 @@ class ParakeetTranscriptionService: TranscriptionService {
             inputFile.framePosition = currentFrame
             try inputFile.read(into: readBuffer, frameCount: framesToRead)
 
+            var samples: [Float] = []
+            var conversionError = false
+            autoreleasepool {
             // Convert if necessary
             let floatBuffer: AVAudioPCMBuffer
-            if let converter = converter {
-                guard let outBuf = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: AVAudioFrameCount(Double(readBuffer.frameLength) * (sr / inputFile.fileFormat.sampleRate))) else {
-                    break
+            if needsConvert {
+                // Create a fresh converter per chunk to avoid internal state confusion
+                guard let chunkConverter = AVAudioConverter(from: readBuffer.format, to: targetFormat) else {
+                    conversionError = true
+                    return
                 }
+                // Estimate output capacity conservatively (add small headroom)
+                let ratio = targetFormat.sampleRate / readBuffer.format.sampleRate
+                let estOutFrames = AVAudioFrameCount(Double(readBuffer.frameLength) * ratio + 512)
+                guard let outBuf = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: estOutFrames) else {
+                    conversionError = true
+                    return
+                }
+                var provided = false
                 var error: NSError?
-                let status = converter.convert(to: outBuf, error: &error, withInputFrom: { _, outStatus in
+                let status = chunkConverter.convert(to: outBuf, error: &error, withInputFrom: { _, outStatus in
+                    if provided {
+                        outStatus.pointee = .endOfStream
+                        return nil
+                    }
+                    provided = true
                     outStatus.pointee = .haveData
                     return readBuffer
                 })
-                if status == .error { throw ASRError.invalidAudioData }
+                if status == .error || error != nil { conversionError = true; return }
+                
                 floatBuffer = outBuf
             } else {
                 floatBuffer = readBuffer
@@ -105,12 +123,18 @@ class ParakeetTranscriptionService: TranscriptionService {
 
             // Extract floats
             let n = Int(floatBuffer.frameLength)
-            var samples = [Float](repeating: 0, count: n)
+            samples = [Float](repeating: 0, count: n)
             if let data = floatBuffer.floatChannelData {
                 for i in 0..<n { samples[i] = data[0][i] }
             }
+            }
 
             // Optional: simple VAD on chunk length threshold (skip for now for robustness)
+            if conversionError || samples.isEmpty {
+                self.logger.warning("Skipping chunk due to conversion issue or empty buffer at frame position \(currentFrame). error=\(conversionError) samples=\(samples.count)")
+                currentFrame += AVAudioFramePosition(framesToRead)
+                continue
+            }
             let chunkText = try await transcribeSamplesOnce(asrManager: asrManager, samples: samples)
             if !chunkText.isEmpty {
                 if !combinedText.isEmpty { combinedText.append(" ") }
@@ -121,27 +145,16 @@ class ParakeetTranscriptionService: TranscriptionService {
         }
 
         // Cleanup after long job
-        await MainActor.run {
-            asrManager.cleanup()
-            self.isModelLoaded = false
-            self.logger.notice("🦜 Parakeet ASR models cleaned up after streaming")
-        }
+        asrManager.cleanup()
+        self.isModelLoaded = false
+        self.logger.notice("🦜 Parakeet ASR models cleaned up after streaming")
 
         return combinedText
     }
 
     private func transcribeSamplesOnce(asrManager: AsrManager, samples: [Float]) async throws -> String {
-        // Create a dedicated autorelease pool for the transcription to contain memory issues
-        return try await withCheckedThrowingContinuation { continuation in
-            Task.detached {
-                do {
-                    let result = try await asrManager.transcribe(samples)
-                    continuation.resume(returning: result.text)
-                } catch {
-                    continuation.resume(throwing: error)
-                }
-            }
-        }
+        let result = try await asrManager.transcribe(samples)
+        return result.text
     }
 
     private func readAudioSamples(from url: URL) throws -> [Float] {

@@ -64,17 +64,24 @@ class TranscriptionAPIHandler {
         let audioFormat = AudioFormatDetector.detectFormat(from: audioData)
         logger.info("Detected audio format: \(audioFormat.rawValue)")
 
-        // Add stricter file size limits for API transcriptions to prevent whisper_full infinite loops
-        // Large files can cause the C-level whisper_full function to hang indefinitely
-        // MP3 files are especially problematic and need much stricter limits
+        // File size limits for API transcriptions
+        // Note: Parakeet runs locally through CoreML and is not subject to the same small-file pitfalls as Whisper.
+        // Simplify client integrations by relaxing size limits for Parakeet and primarily gating by duration.
+        let currentModel = await whisperState.currentTranscriptionModel
+        let isParakeet = currentModel?.provider == .parakeet
+
         let maxSizeMB: Double
         let formatWarning: String
 
-        if audioFormat == .mp3 {
-            maxSizeMB = 10.0 // Raised MP3 limit now that abort safeguards are in place
+        if isParakeet {
+            // Generous size ceiling to reduce client-side chunking; duration check below is the effective guard
+            maxSizeMB = 100.0
+            formatWarning = ""
+        } else if audioFormat == .mp3 {
+            maxSizeMB = 10.0 // For Whisper/native paths keep conservative MP3 ceiling
             formatWarning = " MP3 files are particularly prone to processing issues."
         } else {
-            maxSizeMB = 30.0 // Raised limit for WAV/PCM and other formats
+            maxSizeMB = 30.0 // WAV/PCM and others
             formatWarning = ""
         }
 
@@ -187,7 +194,8 @@ class TranscriptionAPIHandler {
             let estimatedDuration = CMTimeGetSeconds(try await audioAssetPrecheck.load(.duration))
 
             // Apply duration limits aligned with safer processing windows
-            let maxDurationMinutes: Double = audioFormat == .mp3 ? 8.0 : 15.0
+            // Parakeet can handle longer clips locally; allow up to 30 minutes to reduce chunking.
+            let maxDurationMinutes: Double = isParakeet ? 30.0 : (audioFormat == .mp3 ? 8.0 : 15.0)
 
             if estimatedDuration > maxDurationMinutes * 60 {
                 logger.error("Pre-flight check: \(audioFormat.rawValue.uppercased()) duration (\(String(format: "%.1f", estimatedDuration / 60)) minutes) exceeds \(String(format: "%.1f", maxDurationMinutes))-minute limit")
@@ -328,7 +336,26 @@ class TranscriptionAPIHandler {
         case .parakeet:
             logger.debug("🦜 Using Parakeet transcription service...")
             do {
-                text = try await parakeetTranscriptionService!.transcribe(audioURL: processedURL, model: currentModel)
+                // Add a reasonable timeout for Parakeet that scales with duration
+                let baseTimeout: TimeInterval = 1800 // 30 minutes ceiling
+                let maxTranscriptionTime: TimeInterval = min(baseTimeout, max(120, duration * 4))
+                logger.info("🕒 Setting Parakeet transcription timeout to \(String(format: "%.1f", maxTranscriptionTime)) seconds for \(String(format: "%.1f", duration))s audio")
+                text = try await withTranscriptionTimeout(seconds: maxTranscriptionTime) {
+                    try await parakeetTranscriptionService!.transcribe(audioURL: processedURL, model: currentModel)
+                }
+            } catch is TranscriptionTimeoutError {
+                logger.error("🔴 Parakeet transcription timed out after duration-based limit")
+                let errorResponse = TranscriptionErrorResponse(
+                    success: false,
+                    error: ErrorDetails(
+                        code: "TRANSCRIPTION_TIMEOUT",
+                        message: "Parakeet transcription timed out. Consider sending shorter segments or reducing the abort budget."
+                    )
+                )
+                let encoder = JSONEncoder()
+                encoder.outputFormatting = .prettyPrinted
+                let errorData = try encoder.encode(errorResponse)
+                throw APIError.transcriptionFailed(String(data: errorData, encoding: .utf8) ?? "Timeout error")
             } catch {
                 logger.error("🔴 Parakeet transcription failed: \(error.localizedDescription)")
                 throw error

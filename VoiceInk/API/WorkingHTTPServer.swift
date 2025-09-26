@@ -710,7 +710,7 @@ class WorkingHTTPServer {
             }
 
             // Process transcription
-            let result = try await withTimeout(seconds: 900, transcriptionProcessor: transcriptionProcessor) { [self] in
+            let result = try await withTimeout(seconds: 14400, transcriptionProcessor: transcriptionProcessor) { [self] in
                 try await transcriptionProcessor.transcribe(audioData: audioData, filename: filename)
             }
 
@@ -762,7 +762,7 @@ class WorkingHTTPServer {
 
         let transcriptionResult: Data
         do {
-            transcriptionResult = try await withTimeout(seconds: 900, transcriptionProcessor: transcriptionProcessor) { [self] in
+            transcriptionResult = try await withTimeout(seconds: 14400, transcriptionProcessor: transcriptionProcessor) { [self] in
                 try await transcriptionProcessor.transcribe(audioData: fileData, filename: filename)
             }
             logger.debug("✅ CONN-\(connectionId): Legacy transcription completed, result size: \(transcriptionResult.count) bytes")

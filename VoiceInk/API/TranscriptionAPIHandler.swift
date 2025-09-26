@@ -74,8 +74,8 @@ class TranscriptionAPIHandler {
         let formatWarning: String
 
         if isParakeet {
-            // Generous size ceiling to reduce client-side chunking; duration check below is the effective guard
-            maxSizeMB = 100.0
+            // Very generous size ceiling to reduce client-side chunking; duration check below is the effective guard
+            maxSizeMB = 500.0
             formatWarning = ""
         } else if audioFormat == .mp3 {
             maxSizeMB = 10.0 // For Whisper/native paths keep conservative MP3 ceiling
@@ -194,8 +194,8 @@ class TranscriptionAPIHandler {
             let estimatedDuration = CMTimeGetSeconds(try await audioAssetPrecheck.load(.duration))
 
             // Apply duration limits aligned with safer processing windows
-            // Parakeet can handle longer clips locally; allow up to 30 minutes to reduce chunking.
-            let maxDurationMinutes: Double = isParakeet ? 30.0 : (audioFormat == .mp3 ? 8.0 : 15.0)
+            // Parakeet can handle longer clips locally; allow up to 180 minutes to reduce chunking.
+            let maxDurationMinutes: Double = isParakeet ? 180.0 : (audioFormat == .mp3 ? 8.0 : 15.0)
 
             if estimatedDuration > maxDurationMinutes * 60 {
                 logger.error("Pre-flight check: \(audioFormat.rawValue.uppercased()) duration (\(String(format: "%.1f", estimatedDuration / 60)) minutes) exceeds \(String(format: "%.1f", maxDurationMinutes))-minute limit")
@@ -336,8 +336,8 @@ class TranscriptionAPIHandler {
         case .parakeet:
             logger.debug("🦜 Using Parakeet transcription service...")
             do {
-                // Add a reasonable timeout for Parakeet that scales with duration
-                let baseTimeout: TimeInterval = 1800 // 30 minutes ceiling
+                // Add a generous timeout for Parakeet that scales with duration (up to 3 hours)
+                let baseTimeout: TimeInterval = 10800 // 3 hours ceiling
                 let maxTranscriptionTime: TimeInterval = min(baseTimeout, max(120, duration * 4))
                 logger.info("🕒 Setting Parakeet transcription timeout to \(String(format: "%.1f", maxTranscriptionTime)) seconds for \(String(format: "%.1f", duration))s audio")
                 text = try await withTranscriptionTimeout(seconds: maxTranscriptionTime) {

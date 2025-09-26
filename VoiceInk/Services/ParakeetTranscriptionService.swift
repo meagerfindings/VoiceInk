@@ -42,83 +42,106 @@ class ParakeetTranscriptionService: TranscriptionService {
         }
 
         // Double-check after potential loading
-		guard let asrManager = self.asrManager, isModelLoaded else {
-			throw ASRError.notInitialized
-		}
+        guard let asrManager = self.asrManager, isModelLoaded else {
+            throw ASRError.notInitialized
+        }
         
-        let audioSamples = try readAudioSamples(from: audioURL)
+        // Inspect audio duration to decide streaming vs single-shot
+        let asset = AVURLAsset(url: audioURL)
+        let durationSeconds = (try? await asset.load(.duration).seconds).map { Double($0) } ?? 0
+        let useStreaming = durationSeconds > 180.0 // stream when longer than 3 minutes
 
-        let durationSeconds = Double(audioSamples.count) / 16000.0
-
-        let isVADEnabled = UserDefaults.standard.object(forKey: "IsVADEnabled") as? Bool ?? true
-
-        let speechAudio: [Float]
-        if durationSeconds < 20.0 || !isVADEnabled {
-            speechAudio = audioSamples
-        } else {
-            let vadConfig = VadConfig(threshold: 0.7)
-            if vadManager == nil, let customModelsDirectory {
-                do {
-                    vadManager = try await VadManager(
-                        config: vadConfig,
-                        modelDirectory: customModelsDirectory.deletingLastPathComponent()
-                    )
-                } catch {
-                    // Silent failure
-                }
-            }
-
-            do {
-                if let vadManager {
-                    let segments = try await vadManager.segmentSpeechAudio(audioSamples)
-                    if segments.isEmpty {
-                        speechAudio = audioSamples
-                    } else {
-                        speechAudio = segments.flatMap { $0 }
-                    }
-                } else {
-                    speechAudio = audioSamples
-                }
-            } catch {
-                speechAudio = audioSamples
-            }
+        if !useStreaming {
+            // Short clips: load once (existing path)
+            let audioSamples = try readAudioSamples(from: audioURL)
+            return try await transcribeSamplesOnce(asrManager: asrManager, samples: audioSamples)
         }
 
+        // Long-form streaming transcription to bound memory
+        let sr: Double = 16000.0
+        let framesPerSecond = AVAudioFrameCount(sr)
+        let chunkSeconds: Double = 120.0
+        let framesPerChunk = AVAudioFrameCount(sr * chunkSeconds)
+
+        guard let inputFile = try? AVAudioFile(forReading: audioURL) else {
+            throw ASRError.invalidAudioData
+        }
+
+        // Convert to 16k mono float if needed
+        let targetFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: sr, channels: 1, interleaved: false)!
+        let needsConvert = inputFile.fileFormat.sampleRate != sr || inputFile.fileFormat.channelCount != 1 || inputFile.fileFormat.commonFormat != .pcmFormatFloat32
+        let converter = needsConvert ? AVAudioConverter(from: inputFile.fileFormat, to: targetFormat) : nil
+
+        var combinedText = ""
+        var currentFrame: AVAudioFramePosition = 0
+        let totalFrames = inputFile.length
+
+        while currentFrame < totalFrames {
+            let remaining = totalFrames - currentFrame
+            let framesToRead = min(AVAudioFrameCount(remaining), framesPerChunk)
+
+            guard let readBuffer = AVAudioPCMBuffer(pcmFormat: inputFile.processingFormat, frameCapacity: framesToRead) else {
+                break
+            }
+            inputFile.framePosition = currentFrame
+            try inputFile.read(into: readBuffer, frameCount: framesToRead)
+
+            // Convert if necessary
+            let floatBuffer: AVAudioPCMBuffer
+            if let converter = converter {
+                guard let outBuf = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: AVAudioFrameCount(Double(readBuffer.frameLength) * (sr / inputFile.fileFormat.sampleRate))) else {
+                    break
+                }
+                var error: NSError?
+                let status = converter.convert(to: outBuf, error: &error, withInputFrom: { _, outStatus in
+                    outStatus.pointee = .haveData
+                    return readBuffer
+                })
+                if status == .error { throw ASRError.invalidAudioData }
+                floatBuffer = outBuf
+            } else {
+                floatBuffer = readBuffer
+            }
+
+            // Extract floats
+            let n = Int(floatBuffer.frameLength)
+            var samples = [Float](repeating: 0, count: n)
+            if let data = floatBuffer.floatChannelData {
+                for i in 0..<n { samples[i] = data[0][i] }
+            }
+
+            // Optional: simple VAD on chunk length threshold (skip for now for robustness)
+            let chunkText = try await transcribeSamplesOnce(asrManager: asrManager, samples: samples)
+            if !chunkText.isEmpty {
+                if !combinedText.isEmpty { combinedText.append(" ") }
+                combinedText.append(chunkText)
+            }
+
+            currentFrame += AVAudioFramePosition(framesToRead)
+        }
+
+        // Cleanup after long job
+        await MainActor.run {
+            asrManager.cleanup()
+            self.isModelLoaded = false
+            self.logger.notice("🦜 Parakeet ASR models cleaned up after streaming")
+        }
+
+        return combinedText
+    }
+
+    private func transcribeSamplesOnce(asrManager: AsrManager, samples: [Float]) async throws -> String {
         // Create a dedicated autorelease pool for the transcription to contain memory issues
-        let text = try await withCheckedThrowingContinuation { continuation in
-            Task.detached { [weak self] in
+        return try await withCheckedThrowingContinuation { continuation in
+            Task.detached {
                 do {
-                    // Use autoreleasepool to ensure proper cleanup within the transcription
-                    let result = try await asrManager.transcribe(speechAudio)
-                    let extractedText = result.text
-
-                    // Schedule cleanup immediately after getting the text
-                    Task.detached { [weak self] in
-                        // Brief delay to ensure result is fully processed
-                        try? await Task.sleep(for: .milliseconds(50))
-                        await MainActor.run {
-                            asrManager.cleanup()
-                            self?.isModelLoaded = false
-                            self?.logger.notice("🦜 Parakeet ASR models cleaned up from memory")
-                        }
-                    }
-
-                    continuation.resume(returning: extractedText)
+                    let result = try await asrManager.transcribe(samples)
+                    continuation.resume(returning: result.text)
                 } catch {
-                    // Clean up on error as well
-                    Task.detached { [weak self] in
-                        await MainActor.run {
-                            asrManager.cleanup()
-                            self?.isModelLoaded = false
-                            self?.logger.notice("🦜 Parakeet ASR models cleaned up due to error")
-                        }
-                    }
                     continuation.resume(throwing: error)
                 }
             }
         }
-
-        return text
     }
 
     private func readAudioSamples(from url: URL) throws -> [Float] {

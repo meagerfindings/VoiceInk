@@ -854,8 +854,9 @@ class TranscriptionAPIServer: ObservableObject, WorkingHTTPServerDelegate {
     @Published var totalAudioDuration: TimeInterval = 0
     @Published var totalAPIProcessingTime: TimeInterval = 0
     
-    // Request deduplication tracking
-    private var activeRequests: Set<String> = Set()
+    // Request deduplication tracking with timestamps for expiration
+    private var activeRequests: [String: Date] = [:]
+    private let requestExpirationTime: TimeInterval = 1800 // 30 minutes
     
     // Network handling - runs on background queues
     private var httpServer: WorkingHTTPServer?
@@ -1519,25 +1520,51 @@ class TranscriptionAPIServer: ObservableObject, WorkingHTTPServerDelegate {
     
     /// Legacy method - now checks the new queue system
     func isRequestActive(_ requestId: String) -> Bool {
+        // Clean up expired requests first
+        cleanupExpiredRequests()
+
         // Check new queue system first
         let inNewSystem = activeTranscriptions.contains { $0.requestId == requestId }
         if inNewSystem {
             return true
         }
         // Fall back to legacy system for backward compatibility
-        return activeRequests.contains(requestId)
+        return activeRequests.keys.contains(requestId)
+    }
+
+    /// Remove expired requests from legacy tracking
+    private func cleanupExpiredRequests() {
+        let now = Date()
+        let expiredKeys = activeRequests.filter { now.timeIntervalSince($0.value) > requestExpirationTime }.map { $0.key }
+
+        for key in expiredKeys {
+            activeRequests.removeValue(forKey: key)
+        }
+
+        if !expiredKeys.isEmpty {
+            logger.info("🗑️ Cleaned up \(expiredKeys.count) expired legacy requests")
+        }
     }
 
     /// Legacy method - maintained for backward compatibility
     func addActiveRequest(_ requestId: String) {
-        activeRequests.insert(requestId)
+        activeRequests[requestId] = Date()
         logger.info("📝 Added legacy active request: \(requestId) (total legacy: \(self.activeRequests.count))")
     }
 
     /// Legacy method - maintained for backward compatibility
     func removeActiveRequest(_ requestId: String) {
-        activeRequests.remove(requestId)
+        activeRequests.removeValue(forKey: requestId)
         logger.info("✅ Removed legacy active request: \(requestId) (total legacy: \(self.activeRequests.count))")
+    }
+
+    /// Clear all legacy active requests (used on startup to prevent stale state)
+    func clearLegacyActiveRequests() {
+        let count = activeRequests.count
+        activeRequests.removeAll()
+        if count > 0 {
+            logger.info("🧹 Cleared \(count) stale legacy active requests from API server")
+        }
     }
     
     func updateAPITranscriptionStats(audioDuration: TimeInterval) {

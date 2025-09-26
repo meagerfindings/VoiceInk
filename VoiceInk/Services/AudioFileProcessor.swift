@@ -137,9 +137,22 @@ class AudioProcessor {
             }
         }
         
-        let maxSample = samples.map(abs).max() ?? 1
-        if maxSample > 0 {
+        let maxSample = samples.map(abs).max() ?? 0
+        let nonZeroSamples = samples.filter { abs($0) > 0.0001 }
+
+        // Only normalize if we have non-silent audio with reasonable amplitude
+        if maxSample > 0.0001 && nonZeroSamples.count > samples.count / 100 {
+            // Normal case: normalize to prevent clipping while preserving relative levels
             samples = samples.map { $0 / maxSample }
+        } else if nonZeroSamples.count == 0 {
+            // Silent audio: leave as zeros (don't divide by zero or create NaN)
+            // Whisper should handle silent audio gracefully
+            print("⚠️ AudioProcessor: Audio appears to be completely silent")
+        } else {
+            // Very quiet audio: apply gentle amplification instead of harsh normalization
+            let amplification: Float = 0.1 / maxSample
+            samples = samples.map { $0 * min(amplification, 10.0) } // Cap amplification at 10x
+            print("⚠️ AudioProcessor: Very quiet audio detected, applying \(String(format: "%.1f", min(amplification, 10.0)))x amplification")
         }
         
         return samples

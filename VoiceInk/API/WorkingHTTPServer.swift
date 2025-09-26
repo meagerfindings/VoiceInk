@@ -47,7 +47,7 @@ class WorkingHTTPServer {
     private var isRunning = false
     private let serverQueue = DispatchQueue(label: "working.http.server", qos: .userInitiated)
     
-    // Request deduplication
+    // Legacy request deduplication (deprecated - use queue system instead)
     private var activeRequests: Set<String> = Set()
     private let requestsQueue = DispatchQueue(label: "working.http.server.requests", qos: .userInitiated)
     
@@ -65,8 +65,17 @@ class WorkingHTTPServer {
     // MARK: - Request Deduplication
     
     private func generateRequestId(from data: Data, filename: String?) -> String {
-        let hasher = data.hashValue
-        return "\(filename ?? "unknown")_\(hasher)_\(data.count)"
+        // Generate a unique UUID-based ID with timestamp to prevent collisions
+        let uuid = UUID().uuidString
+        let timestamp = Date().timeIntervalSince1970
+        let fileSize = data.count
+        let filename = filename ?? "unknown"
+
+        // Sample first and last bytes for additional uniqueness
+        let firstByte = data.first ?? 0
+        let lastByte = data.last ?? 0
+
+        return "\(uuid)_\(Int(timestamp))_\(filename)_\(fileSize)_\(firstByte)\(lastByte)"
     }
     
     private func addActiveRequest(_ requestId: String) -> Bool {
@@ -136,6 +145,14 @@ class WorkingHTTPServer {
 
         // Clear any stale requests from previous sessions
         clearActiveRequests()
+
+        // Also clear the API server's legacy tracking if available
+        Task { @MainActor in
+            if let apiServer = self.apiServer {
+                logger.info("🧹 Clearing API server legacy request tracking on startup")
+                apiServer.clearLegacyActiveRequests()
+            }
+        }
 
         logger.info("✅ Working HTTP Server listening on port \(self.port)")
 
@@ -380,16 +397,22 @@ class WorkingHTTPServer {
     private func routeRequest(_ request: HTTPRequest, connectionId: String) async throws -> HTTPResponse {
         switch (request.method, request.path) {
         case ("GET", "/health"):
-            return handleHealthRequest(connectionId: connectionId)
+            return await handleHealthRequest(connectionId: connectionId)
             
         case ("GET", "/test"):
             return handleTestRequest(connectionId: connectionId)
+
+        case ("POST", "/admin/clear-requests"):
+            return await handleClearRequestsRequest(connectionId: connectionId)
             
         case ("POST", "/echo"):
             return handleEchoRequest(request, connectionId: connectionId)
             
         case ("POST", "/api/transcribe"):
             return try await handleTranscriptionRequest(request, connectionId: connectionId)
+
+        case ("POST", "/api/debug-transcribe"):
+            return try await handleDebugTranscriptionRequest(request, connectionId: connectionId)
             
         case ("OPTIONS", _):
             return HTTPResponse.options()
@@ -399,20 +422,52 @@ class WorkingHTTPServer {
         }
     }
     
-    private func handleHealthRequest(connectionId: String) -> HTTPResponse {
+    private func handleHealthRequest(connectionId: String) async -> HTTPResponse {
         logger.debug("🏥 CONN-\(connectionId): Processing health check")
-        
+
+        // Get model and API server status
+        var modelInfo: [String: Any] = ["loaded": false]
+        var queueInfo: [String: Any] = ["available": false]
+
+        if let apiServer = await MainActor.run(body: { self.apiServer }) {
+            let (currentModel, modelLoaded, queueSize, isProcessing, isPaused) = await MainActor.run {
+                let whisperState = apiServer.whisperState
+                return (
+                    whisperState.currentTranscriptionModel,
+                    whisperState.isModelLoaded,
+                    apiServer.transcriptionQueue.count,
+                    apiServer.currentProcessingRequest != nil,
+                    apiServer.isPausedEffective
+                )
+            }
+
+            modelInfo = [
+                "loaded": modelLoaded,
+                "name": currentModel?.displayName ?? "None",
+                "provider": currentModel?.provider.rawValue ?? "none"
+            ]
+
+            queueInfo = [
+                "available": true,
+                "size": queueSize,
+                "processing": isProcessing,
+                "paused": isPaused
+            ]
+        }
+
         let healthData: [String: Any] = [
             "status": "healthy",
             "service": "VoiceInk API",
             "timestamp": ISO8601DateFormatter().string(from: Date()),
-            "version": "2.0-working-http"
+            "version": "2.0-working-http",
+            "model": modelInfo,
+            "queue": queueInfo
         ]
-        
+
         guard let jsonData = try? JSONSerialization.data(withJSONObject: healthData) else {
             return HTTPResponse.error(500, "Failed to serialize health data")
         }
-        
+
         return HTTPResponse.success(data: jsonData, contentType: "application/json")
     }
     
@@ -434,7 +489,7 @@ class WorkingHTTPServer {
     
     private func handleEchoRequest(_ request: HTTPRequest, connectionId: String) -> HTTPResponse {
         logger.debug("📢 CONN-\(connectionId): Processing echo request")
-        
+
         let echoData: [String: Any] = [
             "echo": "success",
             "bodySize": request.body.count,
@@ -442,14 +497,117 @@ class WorkingHTTPServer {
             "path": request.path,
             "timestamp": ISO8601DateFormatter().string(from: Date())
         ]
-        
+
         guard let jsonData = try? JSONSerialization.data(withJSONObject: echoData) else {
             return HTTPResponse.error(500, "Failed to serialize echo data")
         }
-        
+
         return HTTPResponse.success(data: jsonData, contentType: "application/json")
     }
-    
+
+    private func handleClearRequestsRequest(connectionId: String) async -> HTTPResponse {
+        logger.info("🔧 CONN-\(connectionId): Processing admin clear requests")
+
+        // Clear local active requests
+        clearActiveRequests()
+
+        // Clear API server's legacy tracking if available
+        var apiServerCleared = false
+        if let apiServer = await MainActor.run(body: { self.apiServer }) {
+            await MainActor.run {
+                apiServer.clearLegacyActiveRequests()
+                apiServer.forceStopAPIProcessing()
+            }
+            apiServerCleared = true
+        }
+
+        let responseData: [String: Any] = [
+            "success": true,
+            "message": "Request tracking cleared",
+            "cleared_local": true,
+            "cleared_api_server": apiServerCleared,
+            "timestamp": ISO8601DateFormatter().string(from: Date())
+        ]
+
+        guard let jsonData = try? JSONSerialization.data(withJSONObject: responseData) else {
+            return HTTPResponse.error(500, "Failed to serialize response")
+        }
+
+        return HTTPResponse.success(data: jsonData, contentType: "application/json")
+    }
+
+    private func handleDebugTranscriptionRequest(_ request: HTTPRequest, connectionId: String) async throws -> HTTPResponse {
+        logger.info("🔧 CONN-\(connectionId): Processing debug transcription request, body size: \(request.body.count)")
+
+        guard let boundary = extractBoundary(from: request.headers["content-type"]) else {
+            logger.error("🔴 CONN-\(connectionId): No boundary in content-type: \(request.headers["content-type"] ?? "nil")")
+            return HTTPResponse.error(400, "Missing boundary in multipart/form-data")
+        }
+
+        guard let fileResult = extractFileFromMultipart(request.body, boundary: boundary, connectionId: connectionId) else {
+            logger.error("🔴 CONN-\(connectionId): Failed to extract file from multipart data")
+            return HTTPResponse.error(400, "No file found in request")
+        }
+
+        let fileData = fileResult.data
+        let filename = fileResult.filename
+
+        logger.info("🎉 CONN-\(connectionId): Debug file extracted, size: \(fileData.count) bytes, filename: \(filename ?? "none")")
+
+        // Get detailed system information
+        let debugInfo: [String: Any]
+        if let apiServer = await MainActor.run(body: { self.apiServer }) {
+            let (currentModel, modelLoaded, queueSize, isProcessing, isPaused) = await MainActor.run {
+                let whisperState = apiServer.whisperState
+                return (
+                    whisperState.currentTranscriptionModel,
+                    whisperState.isModelLoaded,
+                    apiServer.transcriptionQueue.count,
+                    apiServer.currentProcessingRequest != nil,
+                    apiServer.isPausedEffective
+                )
+            }
+
+            debugInfo = [
+                "file": [
+                    "name": filename ?? "unknown",
+                    "size_bytes": fileData.count,
+                    "size_mb": Double(fileData.count) / 1024 / 1024,
+                    "first_bytes": Array(fileData.prefix(16)).map { String(format: "%02X", $0) }
+                ],
+                "model": [
+                    "loaded": modelLoaded,
+                    "name": currentModel?.displayName ?? "None",
+                    "provider": currentModel?.provider.rawValue ?? "none"
+                ],
+                "queue": [
+                    "size": queueSize,
+                    "processing": isProcessing,
+                    "paused": isPaused
+                ],
+                "processing": [
+                    "note": "Debug endpoint - detailed diagnostics only, no actual transcription performed",
+                    "recommendation": "Use /api/transcribe for actual transcription"
+                ]
+            ]
+        } else {
+            debugInfo = [
+                "error": "API Server not available",
+                "file": [
+                    "name": filename ?? "unknown",
+                    "size_bytes": fileData.count,
+                    "size_mb": Double(fileData.count) / 1024 / 1024
+                ]
+            ]
+        }
+
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let responseData = try encoder.encode(["success": true, "debug": debugInfo, "timestamp": ISO8601DateFormatter().string(from: Date())])
+
+        return HTTPResponse.success(data: responseData, contentType: "application/json")
+    }
+
     private func handleTranscriptionRequest(_ request: HTTPRequest, connectionId: String) async throws -> HTTPResponse {
         logger.info("🎤 CONN-\(connectionId): Processing transcription request, body size: \(request.body.count)")
 
@@ -482,11 +640,14 @@ class WorkingHTTPServer {
 
             guard let queueRequest = queueRequest else {
                 if await MainActor.run(body: { apiServer.isRequestActive(requestId) }) {
-                    logger.warning("⚠️ CONN-\(connectionId): Duplicate request detected")
-                    return HTTPResponse.error(409, "Request already in progress")
+                    logger.warning("⚠️ CONN-\(connectionId): Duplicate request detected for ID: \(requestId)")
+                    logger.warning("⚠️ CONN-\(connectionId): File: \(filename ?? "unknown"), Size: \(fileData.count) bytes")
+                    return HTTPResponse.error(409, "Request already in progress. If this is a new request, please wait a moment and try again.")
                 } else {
-                    logger.error("🔴 CONN-\(connectionId): Queue is full")
-                    return HTTPResponse.error(503, "Server is too busy. Queue is full. Please try again later.")
+                    logger.error("🔴 CONN-\(connectionId): Queue is full, rejecting new request")
+                    let queueCount = await MainActor.run { apiServer.transcriptionQueue.count }
+                    logger.error("🔴 CONN-\(connectionId): Queue size: \(queueCount), Max: 10")
+                    return HTTPResponse.error(503, "Server is too busy. Queue is full (\(queueCount)/10 slots). Please try again later.")
                 }
             }
 

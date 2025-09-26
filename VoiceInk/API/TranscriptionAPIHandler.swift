@@ -247,7 +247,22 @@ class TranscriptionAPIHandler {
         // Process audio file
         logger.info("Processing audio samples...")
         var samples = try await audioProcessor.processAudioToSamples(tempURL)
-        logger.info("Audio samples processed: \(samples.count) samples")
+
+        // Log detailed sample statistics for debugging
+        let sampleCount = samples.count
+        let nonZeroSamples = samples.filter { abs($0) > 0.0001 }
+        let maxSample = samples.map(abs).max() ?? 0
+        let meanSample = samples.isEmpty ? 0 : samples.reduce(0, +) / Float(samples.count)
+        let silentSamples = samples.count - nonZeroSamples.count
+
+        logger.info("Audio samples processed: \(sampleCount) total, \(nonZeroSamples.count) non-zero, \(silentSamples) silent")
+        logger.info("Sample statistics: max=\(String(format: "%.4f", maxSample)), mean=\(String(format: "%.4f", meanSample))")
+
+        if nonZeroSamples.count == 0 {
+            logger.error("⚠️ All audio samples are zero or near-zero - this will likely result in empty transcription")
+        } else if Float(nonZeroSamples.count) / Float(sampleCount) < 0.1 {
+            logger.warning("⚠️ Audio appears to be mostly silent (\(String(format: "%.1f", Float(nonZeroSamples.count) / Float(sampleCount) * 100))% non-zero samples)")
+        }
 
         // Clear original audio data from memory immediately after processing
         // This helps reduce memory pressure for large files
@@ -339,6 +354,16 @@ class TranscriptionAPIHandler {
         let transcriptionDuration = Date().timeIntervalSince(transcriptionStart)
         logger.info("✅ Transcription completed in \(String(format: "%.1f", transcriptionDuration))s, result length: \(text.count) chars")
 
+        // Log detailed transcription results for debugging
+        if text.isEmpty {
+            logger.error("❌ EMPTY TRANSCRIPTION: Model '\(currentModel.displayName)' returned empty text for \(String(format: "%.1f", fileSizeMB))MB \(audioFormat.rawValue.uppercased()) file")
+            logger.error("❌ Audio details: \(sampleCount) samples, \(String(format: "%.1f", duration))s duration, \(nonZeroSamples.count) non-zero samples")
+        } else if text.count < 10 {
+            logger.warning("⚠️ Very short transcription result: '\(text)'")
+        } else {
+            logger.info("📝 Transcription preview: '\(String(text.prefix(100)))\(text.count > 100 ? "..." : "")'")
+        }
+
         // Add cancellation check after transcription
         try Task.checkCancellation()
         text = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -397,7 +422,62 @@ class TranscriptionAPIHandler {
             logger.error("Failed to save API transcription to database: \(error)")
         }
         
-        // Prepare response
+        // Handle empty transcription results with detailed diagnostics
+        if text.isEmpty {
+            logger.error("🚨 EMPTY TRANSCRIPTION DETECTED - Returning detailed error response")
+
+            let diagnostics = EmptyTranscriptDiagnostics(
+                audioFile: [
+                    "size_mb": String(format: "%.1f", fileSizeMB),
+                    "duration_seconds": String(format: "%.1f", duration),
+                    "format": audioFormat.rawValue.uppercased(),
+                    "filename": filename ?? "unknown"
+                ],
+                audioSamples: [
+                    "total_samples": sampleCount,
+                    "non_zero_samples": nonZeroSamples.count,
+                    "silent_samples": silentSamples,
+                    "max_amplitude": String(format: "%.4f", maxSample),
+                    "mean_amplitude": String(format: "%.4f", meanSample),
+                    "non_zero_percentage": String(format: "%.1f", Float(nonZeroSamples.count) / Float(sampleCount) * 100)
+                ],
+                transcriptionSettings: [
+                    "model": currentModel.displayName,
+                    "provider": currentModel.provider.rawValue,
+                    "language": UserDefaults.standard.string(forKey: "SelectedLanguage") ?? "auto",
+                    "prompt": UserDefaults.standard.string(forKey: "TranscriptionPrompt") ?? ""
+                ],
+                possibleCauses: [
+                    "Audio file contains no speech or is completely silent",
+                    "Audio volume is too low for the model to detect speech",
+                    "Audio format conversion may have corrupted the samples",
+                    "Selected language doesn't match the audio content",
+                    "Model may not be properly loaded or configured"
+                ],
+                troubleshootingSteps: [
+                    "Try using a different audio file with clear speech",
+                    "Increase audio volume before processing",
+                    "Try switching to a different transcription model",
+                    "Set language to 'auto' if manually specified",
+                    "Check that the model is properly loaded in VoiceInk"
+                ]
+            )
+
+            let errorResponse = TranscriptionErrorResponse(
+                success: false,
+                error: ErrorDetails(
+                    code: "EMPTY_TRANSCRIPTION",
+                    message: "The transcription result is empty. This usually indicates that no speech was detected in the audio file.",
+                    diagnostics: diagnostics
+                )
+            )
+
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = .prettyPrinted
+            return try encoder.encode(errorResponse)
+        }
+
+        // Prepare successful response
         let response = TranscriptionResponse(
             success: true,
             text: text,
@@ -448,6 +528,84 @@ struct TranscriptionErrorResponse: Codable {
 struct ErrorDetails: Codable {
     let code: String
     let message: String
+    let diagnostics: EmptyTranscriptDiagnostics?
+
+    init(code: String, message: String, diagnostics: EmptyTranscriptDiagnostics? = nil) {
+        self.code = code
+        self.message = message
+        self.diagnostics = diagnostics
+    }
+}
+
+struct EmptyTranscriptDiagnostics: Codable {
+    let audioFile: [String: String]
+    let audioSamples: [String: Any]
+    let transcriptionSettings: [String: String]
+    let possibleCauses: [String]
+    let troubleshootingSteps: [String]
+
+    private enum CodingKeys: String, CodingKey {
+        case audioFile, audioSamples, transcriptionSettings, possibleCauses, troubleshootingSteps
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(audioFile, forKey: .audioFile)
+        try container.encode(transcriptionSettings, forKey: .transcriptionSettings)
+        try container.encode(possibleCauses, forKey: .possibleCauses)
+        try container.encode(troubleshootingSteps, forKey: .troubleshootingSteps)
+
+        // Handle audioSamples with mixed types
+        var samplesContainer = container.nestedContainer(keyedBy: DynamicCodingKeys.self, forKey: .audioSamples)
+        for (key, value) in audioSamples {
+            let codingKey = DynamicCodingKeys(stringValue: key)!
+            if let intValue = value as? Int {
+                try samplesContainer.encode(intValue, forKey: codingKey)
+            } else if let stringValue = value as? String {
+                try samplesContainer.encode(stringValue, forKey: codingKey)
+            }
+        }
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        audioFile = try container.decode([String: String].self, forKey: .audioFile)
+        transcriptionSettings = try container.decode([String: String].self, forKey: .transcriptionSettings)
+        possibleCauses = try container.decode([String].self, forKey: .possibleCauses)
+        troubleshootingSteps = try container.decode([String].self, forKey: .troubleshootingSteps)
+
+        let samplesContainer = try container.nestedContainer(keyedBy: DynamicCodingKeys.self, forKey: .audioSamples)
+        var samples: [String: Any] = [:]
+        for key in samplesContainer.allKeys {
+            if let intValue = try? samplesContainer.decode(Int.self, forKey: key) {
+                samples[key.stringValue] = intValue
+            } else if let stringValue = try? samplesContainer.decode(String.self, forKey: key) {
+                samples[key.stringValue] = stringValue
+            }
+        }
+        audioSamples = samples
+    }
+
+    init(audioFile: [String: String], audioSamples: [String: Any], transcriptionSettings: [String: String], possibleCauses: [String], troubleshootingSteps: [String]) {
+        self.audioFile = audioFile
+        self.audioSamples = audioSamples
+        self.transcriptionSettings = transcriptionSettings
+        self.possibleCauses = possibleCauses
+        self.troubleshootingSteps = troubleshootingSteps
+    }
+}
+
+struct DynamicCodingKeys: CodingKey {
+    var stringValue: String
+    var intValue: Int?
+
+    init?(stringValue: String) {
+        self.stringValue = stringValue
+    }
+
+    init?(intValue: Int) {
+        return nil
+    }
 }
 
 // MARK: - Errors

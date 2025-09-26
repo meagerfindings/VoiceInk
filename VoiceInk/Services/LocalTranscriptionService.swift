@@ -96,13 +96,53 @@ class LocalTranscriptionService: TranscriptionService {
     }
     
     private func readAudioSamples(_ url: URL) throws -> [Float] {
-        let data = try Data(contentsOf: url)
-        let floats = stride(from: 44, to: data.count, by: 2).map {
-            return data[$0..<$0 + 2].withUnsafeBytes {
-                let short = Int16(littleEndian: $0.load(as: Int16.self))
-                return max(-1.0, min(Float(short) / 32767.0, 1.0))
+        // Use AVAudioFile instead of raw data parsing to properly handle WAV files
+        // This is more reliable than assuming a fixed 44-byte header
+        guard let audioFile = try? AVAudioFile(forReading: url) else {
+            logger.error("Cannot open audio file for reading: \(url.lastPathComponent)")
+            throw WhisperStateError.transcriptionFailed
+        }
+
+        let format = audioFile.processingFormat
+        let frameCount = AVAudioFrameCount(audioFile.length)
+
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else {
+            logger.error("Cannot create PCM buffer for audio file")
+            throw WhisperStateError.transcriptionFailed
+        }
+
+        do {
+            try audioFile.read(into: buffer)
+        } catch {
+            logger.error("Cannot read audio file into buffer: \(error)")
+            throw WhisperStateError.transcriptionFailed
+        }
+
+        guard let channelData = buffer.floatChannelData else {
+            logger.error("Cannot access float channel data from buffer")
+            throw WhisperStateError.transcriptionFailed
+        }
+
+        let channelCount = Int(format.channelCount)
+        let frameLength = Int(buffer.frameLength)
+        var samples: [Float] = []
+
+        if channelCount == 1 {
+            // Mono audio - direct copy
+            samples = Array(UnsafeBufferPointer(start: channelData[0], count: frameLength))
+        } else {
+            // Multi-channel audio - mix down to mono
+            samples.reserveCapacity(frameLength)
+            for frame in 0..<frameLength {
+                var sum: Float = 0
+                for channel in 0..<channelCount {
+                    sum += channelData[channel][frame]
+                }
+                samples.append(sum / Float(channelCount))
             }
         }
-        return floats
+
+        logger.debug("Read \(samples.count) audio samples from \(url.lastPathComponent)")
+        return samples
     }
 } 

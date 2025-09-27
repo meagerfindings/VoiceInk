@@ -18,12 +18,12 @@ func withTranscriptionTimeout<T>(seconds: TimeInterval, whisperState: WhisperSta
         // Add the timeout task
         group.addTask {
             try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
-            
+
             // On timeout, immediately abort any running whisper computation
             if let whisperContext = await whisperState.whisperContext {
                 await whisperContext.requestAbortNow()
             }
-            
+
             throw TranscriptionTimeoutError(duration: seconds)
         }
 
@@ -31,7 +31,13 @@ func withTranscriptionTimeout<T>(seconds: TimeInterval, whisperState: WhisperSta
         guard let result = try await group.next() else {
             throw TranscriptionTimeoutError(duration: seconds)
         }
+
+        // Ensure all tasks are cancelled before cleanup
         group.cancelAll()
+
+        // Give a moment for cancellation to propagate
+        try await Task.sleep(nanoseconds: 10_000_000) // 10ms
+
         return result
     }
 }

@@ -85,53 +85,68 @@ actor ParakeetTranscriptionService: TranscriptionService {
             inputFile.framePosition = currentFrame
             try inputFile.read(into: readBuffer, frameCount: framesToRead)
 
-            var samples: [Float] = []
-            var conversionError = false
-            autoreleasepool {
-            // Convert if necessary
-            let floatBuffer: AVAudioPCMBuffer
-            if needsConvert {
-                // Create a fresh converter per chunk to avoid internal state confusion
-                guard let chunkConverter = AVAudioConverter(from: readBuffer.format, to: targetFormat) else {
-                    conversionError = true
-                    return
-                }
-                // Estimate output capacity conservatively (add small headroom)
-                let ratio = targetFormat.sampleRate / readBuffer.format.sampleRate
-                let estOutFrames = AVAudioFrameCount(Double(readBuffer.frameLength) * ratio + 512)
-                guard let outBuf = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: estOutFrames) else {
-                    conversionError = true
-                    return
-                }
-                var provided = false
-                var error: NSError?
-                let status = chunkConverter.convert(to: outBuf, error: &error, withInputFrom: { _, outStatus in
-                    if provided {
-                        outStatus.pointee = .endOfStream
-                        return nil
-                    }
-                    provided = true
-                    outStatus.pointee = .haveData
-                    return readBuffer
-                })
-                if status == .error || error != nil { conversionError = true; return }
-                
-                floatBuffer = outBuf
-            } else {
-                floatBuffer = readBuffer
-            }
+            let samples: [Float]
+            do {
+                samples = try autoreleasepool {
+                    // Convert if necessary
+                    let floatBuffer: AVAudioPCMBuffer
+                    if needsConvert {
+                        // Create a fresh converter per chunk to avoid internal state confusion
+                        guard let chunkConverter = AVAudioConverter(from: readBuffer.format, to: targetFormat) else {
+                            throw ASRError.invalidAudioData
+                        }
+                        defer {
+                            // Ensure converter is explicitly released
+                            _ = chunkConverter
+                        }
 
-            // Extract floats
-            let n = Int(floatBuffer.frameLength)
-            samples = [Float](repeating: 0, count: n)
-            if let data = floatBuffer.floatChannelData {
-                for i in 0..<n { samples[i] = data[0][i] }
-            }
+                        // Estimate output capacity conservatively (add small headroom)
+                        let ratio = targetFormat.sampleRate / readBuffer.format.sampleRate
+                        let estOutFrames = AVAudioFrameCount(Double(readBuffer.frameLength) * ratio + 512)
+                        guard let outBuf = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: estOutFrames) else {
+                            throw ASRError.invalidAudioData
+                        }
+
+                        var provided = false
+                        var error: NSError?
+                        let status = chunkConverter.convert(to: outBuf, error: &error, withInputFrom: { _, outStatus in
+                            if provided {
+                                outStatus.pointee = .endOfStream
+                                return nil
+                            }
+                            provided = true
+                            outStatus.pointee = .haveData
+                            return readBuffer
+                        })
+
+                        if status == .error || error != nil {
+                            throw ASRError.invalidAudioData
+                        }
+
+                        floatBuffer = outBuf
+                    } else {
+                        floatBuffer = readBuffer
+                    }
+
+                    // Extract floats
+                    let n = Int(floatBuffer.frameLength)
+                    var extractedSamples = [Float](repeating: 0, count: n)
+                    if let data = floatBuffer.floatChannelData {
+                        for i in 0..<n {
+                            extractedSamples[i] = data[0][i]
+                        }
+                    }
+                    return extractedSamples
+                }
+            } catch {
+                self.logger.warning("Audio conversion failed at frame position \(currentFrame): \(error)")
+                currentFrame += AVAudioFramePosition(framesToRead)
+                continue
             }
 
             // Optional: simple VAD on chunk length threshold (skip for now for robustness)
-            if conversionError || samples.isEmpty {
-                self.logger.warning("Skipping chunk due to conversion issue or empty buffer at frame position \(currentFrame). error=\(conversionError) samples=\(samples.count)")
+            if samples.isEmpty {
+                self.logger.warning("Skipping chunk due to empty buffer at frame position \(currentFrame). samples=\(samples.count)")
                 currentFrame += AVAudioFramePosition(framesToRead)
                 continue
             }
@@ -142,6 +157,11 @@ actor ParakeetTranscriptionService: TranscriptionService {
             }
 
             currentFrame += AVAudioFramePosition(framesToRead)
+
+            // Periodically yield to allow other tasks and help with memory pressure
+            if currentFrame % AVAudioFramePosition(framesPerChunk * 5) == 0 {
+                await Task.yield()
+            }
         }
 
         // Cleanup after long job

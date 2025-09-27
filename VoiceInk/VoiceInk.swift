@@ -122,9 +122,11 @@ struct VoiceInkApp: App {
                             UserDefaults.standard.set(true, forKey: "APIServerAutoStartHasBeenSet")
                         }
                         
-                        // Auto-start API server if enabled
+                        // Auto-start API server if enabled (with delay to ensure all dependencies are ready)
                         if UserDefaults.standard.bool(forKey: "APIServerAutoStart") {
-                            apiServer.start()
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                                apiServer.start()
+                            }
                         }
                         
                         // Start the automatic audio cleanup process only if transcript cleanup is not enabled

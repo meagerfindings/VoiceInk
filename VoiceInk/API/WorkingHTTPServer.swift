@@ -117,6 +117,10 @@ class WorkingHTTPServer {
         // Set socket options
         var reuseAddr: Int32 = 1
         setsockopt(serverSocket, SOL_SOCKET, SO_REUSEADDR, &reuseAddr, socklen_t(MemoryLayout<Int32>.size))
+
+        // Set receive timeout to prevent blocking recv() calls
+        var timeout = timeval(tv_sec: 5, tv_usec: 0)  // 5 second timeout
+        setsockopt(serverSocket, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
         
         // Bind to address
         var serverAddr = sockaddr_in()
@@ -218,6 +222,11 @@ class WorkingHTTPServer {
 
             logger.debug("🔗 New client connection accepted: socket \(clientSocket)")
 
+            // Set timeout on client socket to prevent blocking reads
+            var clientTimeout = timeval(tv_sec: 5, tv_usec: 0)  // 5 second timeout
+            setsockopt(clientSocket, SOL_SOCKET, SO_RCVTIMEO, &clientTimeout, socklen_t(MemoryLayout<timeval>.size))
+            setsockopt(clientSocket, SOL_SOCKET, SO_SNDTIMEO, &clientTimeout, socklen_t(MemoryLayout<timeval>.size))
+
             // Handle connection asynchronously
             Task { [weak self] in
                 await self?.handleConnection(clientSocket: clientSocket)
@@ -285,10 +294,19 @@ class WorkingHTTPServer {
             let bytesRead = chunk.withUnsafeMutableBytes { bytes in
                 recv(socket, bytes.baseAddress, bytes.count, 0)
             }
-            
-            guard bytesRead > 0 else {
-                logger.error("🔴 CONN-\(connectionId): Failed to read from socket")
-                return nil
+
+            if bytesRead < 0 {
+                let errorCode = errno
+                if errorCode == EAGAIN || errorCode == EWOULDBLOCK {
+                    logger.debug("🔄 CONN-\(connectionId): Socket read timeout, treating as end of headers")
+                    break  // Timeout - assume we have all the headers we'll get
+                } else {
+                    logger.error("🔴 CONN-\(connectionId): Socket read error: errno=\(errorCode)")
+                    return nil
+                }
+            } else if bytesRead == 0 {
+                logger.debug("📝 CONN-\(connectionId): Client closed connection")
+                break  // Client closed connection
             }
             
             chunk.count = bytesRead
@@ -357,7 +375,27 @@ class WorkingHTTPServer {
                 }
             }
         }
-        
+
+        // If we exited the loop without finding the header end marker, try to parse what we have
+        // This handles cases where client sent headers but we timed out waiting for more data
+        if buffer.count > 0 {
+            logger.debug("🔄 CONN-\(connectionId): No header end marker found, attempting to parse partial headers")
+
+            // Convert buffer to string and try to parse
+            if let headerString = String(data: buffer, encoding: .utf8) {
+                if let request = parseHTTPHeaders(headerString, connectionId: connectionId) {
+                    logger.debug("✅ CONN-\(connectionId): Successfully parsed partial headers")
+                    return HTTPRequest(
+                        method: request.method,
+                        path: request.path,
+                        headers: request.headers,
+                        body: Data(), // No body for partial headers
+                        contentLength: nil
+                    )
+                }
+            }
+        }
+
         logger.error("🔴 CONN-\(connectionId): Headers too large or malformed")
         return nil
     }
@@ -425,46 +463,48 @@ class WorkingHTTPServer {
     private func handleHealthRequest(connectionId: String) async -> HTTPResponse {
         logger.debug("🏥 CONN-\(connectionId): Processing health check")
 
-        // Get model and API server status
-        var modelInfo: [String: Any] = ["loaded": false]
-        var queueInfo: [String: Any] = ["available": false]
-
-        if let apiServer = await MainActor.run(body: { self.apiServer }) {
-            let (currentModel, modelLoaded, queueSize, isProcessing, isPaused) = await MainActor.run {
-                let whisperState = apiServer.whisperState
+        // Get model and API server status with single MainActor access
+        let healthData: (modelInfo: [String: Any], queueInfo: [String: Any]) = await MainActor.run {
+            guard let apiServer = self.apiServer else {
                 return (
-                    whisperState.currentTranscriptionModel,
-                    whisperState.isModelLoaded,
-                    apiServer.transcriptionQueue.count,
-                    apiServer.currentProcessingRequest != nil,
-                    apiServer.isPausedEffective
+                    modelInfo: ["loaded": false],
+                    queueInfo: ["available": false]
                 )
             }
 
-            modelInfo = [
+            let whisperState = apiServer.whisperState
+            let currentModel = whisperState.currentTranscriptionModel
+            let modelLoaded = whisperState.isModelLoaded
+            let queueSize = apiServer.transcriptionQueue.count
+            let isProcessing = apiServer.currentProcessingRequest != nil
+            let isPaused = apiServer.isPausedEffective
+
+            let modelInfo: [String: Any] = [
                 "loaded": modelLoaded,
                 "name": currentModel?.displayName ?? "None",
                 "provider": currentModel?.provider.rawValue ?? "none"
             ]
 
-            queueInfo = [
+            let queueInfo: [String: Any] = [
                 "available": true,
                 "size": queueSize,
                 "processing": isProcessing,
                 "paused": isPaused
             ]
+
+            return (modelInfo: modelInfo, queueInfo: queueInfo)
         }
 
-        let healthData: [String: Any] = [
+        let healthResponse: [String: Any] = [
             "status": "healthy",
             "service": "VoiceInk API",
             "timestamp": ISO8601DateFormatter().string(from: Date()),
             "version": "2.0-working-http",
-            "model": modelInfo,
-            "queue": queueInfo
+            "model": healthData.modelInfo,
+            "queue": healthData.queueInfo
         ]
 
-        guard let jsonData = try? JSONSerialization.data(withJSONObject: healthData) else {
+        guard let jsonData = try? JSONSerialization.data(withJSONObject: healthResponse) else {
             return HTTPResponse.error(500, "Failed to serialize health data")
         }
 
@@ -511,14 +551,12 @@ class WorkingHTTPServer {
         // Clear local active requests
         clearActiveRequests()
 
-        // Clear API server's legacy tracking if available
-        var apiServerCleared = false
-        if let apiServer = await MainActor.run(body: { self.apiServer }) {
-            await MainActor.run {
-                apiServer.clearLegacyActiveRequests()
-                apiServer.forceStopAPIProcessing()
-            }
-            apiServerCleared = true
+        // Clear API server's legacy tracking if available - single MainActor access
+        let apiServerCleared = await MainActor.run {
+            guard let apiServer = self.apiServer else { return false }
+            apiServer.clearLegacyActiveRequests()
+            apiServer.forceStopAPIProcessing()
+            return true
         }
 
         let responseData: [String: Any] = [
@@ -554,21 +592,27 @@ class WorkingHTTPServer {
 
         logger.info("🎉 CONN-\(connectionId): Debug file extracted, size: \(fileData.count) bytes, filename: \(filename ?? "none")")
 
-        // Get detailed system information
-        let debugInfo: [String: Any]
-        if let apiServer = await MainActor.run(body: { self.apiServer }) {
-            let (currentModel, modelLoaded, queueSize, isProcessing, isPaused) = await MainActor.run {
-                let whisperState = apiServer.whisperState
-                return (
-                    whisperState.currentTranscriptionModel,
-                    whisperState.isModelLoaded,
-                    apiServer.transcriptionQueue.count,
-                    apiServer.currentProcessingRequest != nil,
-                    apiServer.isPausedEffective
-                )
+        // Get detailed system information with single MainActor access
+        let debugInfo = await MainActor.run {
+            guard let apiServer = self.apiServer else {
+                return [
+                    "error": "API Server not available",
+                    "file": [
+                        "name": filename ?? "unknown",
+                        "size_bytes": fileData.count,
+                        "size_mb": Double(fileData.count) / 1024 / 1024
+                    ]
+                ] as [String: Any]
             }
 
-            debugInfo = [
+            let whisperState = apiServer.whisperState
+            let currentModel = whisperState.currentTranscriptionModel
+            let modelLoaded = whisperState.isModelLoaded
+            let queueSize = apiServer.transcriptionQueue.count
+            let isProcessing = apiServer.currentProcessingRequest != nil
+            let isPaused = apiServer.isPausedEffective
+
+            return [
                 "file": [
                     "name": filename ?? "unknown",
                     "size_bytes": fileData.count,
@@ -589,16 +633,7 @@ class WorkingHTTPServer {
                     "note": "Debug endpoint - detailed diagnostics only, no actual transcription performed",
                     "recommendation": "Use /api/transcribe for actual transcription"
                 ]
-            ]
-        } else {
-            debugInfo = [
-                "error": "API Server not available",
-                "file": [
-                    "name": filename ?? "unknown",
-                    "size_bytes": fileData.count,
-                    "size_mb": Double(fileData.count) / 1024 / 1024
-                ]
-            ]
+            ] as [String: Any]
         }
 
         let debugResponse = DebugResponse(
@@ -636,26 +671,42 @@ class WorkingHTTPServer {
 
         let requestId = generateRequestId(from: fileData, filename: filename)
 
-        // Use new queue system if available
-        if let apiServer = await MainActor.run(body: { self.apiServer }) {
-            logger.debug("🟢 CONN-\(connectionId): Using new queue system")
+        // Use new queue system if available - single MainActor access
+        let queueResult: QueueResult? = await MainActor.run {
+            guard let apiServer = self.apiServer else { return nil }
 
-            let queueRequest = await MainActor.run {
-                apiServer.enqueueTranscription(requestId: requestId, filename: filename, fileSize: fileData.count)
-            }
+            let queueRequest = apiServer.enqueueTranscription(requestId: requestId, filename: filename, fileSize: fileData.count)
 
             guard let queueRequest = queueRequest else {
-                if await MainActor.run(body: { apiServer.isRequestActive(requestId) }) {
-                    logger.warning("⚠️ CONN-\(connectionId): Duplicate request detected for ID: \(requestId)")
-                    logger.warning("⚠️ CONN-\(connectionId): File: \(filename ?? "unknown"), Size: \(fileData.count) bytes")
-                    return HTTPResponse.error(409, "Request already in progress. If this is a new request, please wait a moment and try again.")
+                if apiServer.isRequestActive(requestId) {
+                    return .duplicate(queueSize: apiServer.transcriptionQueue.count)
                 } else {
-                    logger.error("🔴 CONN-\(connectionId): Queue is full, rejecting new request")
-                    let queueCount = await MainActor.run { apiServer.transcriptionQueue.count }
-                    logger.error("🔴 CONN-\(connectionId): Queue size: \(queueCount), Max: 10")
-                    return HTTPResponse.error(503, "Server is too busy. Queue is full (\(queueCount)/10 slots). Please try again later.")
+                    return .queueFull(queueSize: apiServer.transcriptionQueue.count)
                 }
             }
+
+            return .success(request: queueRequest, position: queueRequest.queuePosition, estimatedWait: queueRequest.estimatedWaitTime)
+        }
+
+        guard let queueResult = queueResult else {
+            // Fall back to old immediate processing system
+            logger.debug("⚠️ CONN-\(connectionId): API Server not available, falling back to immediate processing")
+            return await handleImmediateTranscription(requestId: requestId, fileData: fileData, filename: filename, connectionId: connectionId)
+        }
+
+        switch queueResult {
+        case .duplicate(let queueSize):
+            logger.warning("⚠️ CONN-\(connectionId): Duplicate request detected for ID: \(requestId)")
+            logger.warning("⚠️ CONN-\(connectionId): File: \(filename ?? "unknown"), Size: \(fileData.count) bytes")
+            return HTTPResponse.error(409, "Request already in progress. If this is a new request, please wait a moment and try again.")
+
+        case .queueFull(let queueSize):
+            logger.error("🔴 CONN-\(connectionId): Queue is full, rejecting new request")
+            logger.error("🔴 CONN-\(connectionId): Queue size: \(queueSize), Max: 10")
+            return HTTPResponse.error(503, "Server is too busy. Queue is full (\(queueSize)/10 slots). Please try again later.")
+
+        case .success(let queueRequest, let position, let estimatedWait):
+            logger.debug("🟢 CONN-\(connectionId): Using new queue system")
 
             // Store the audio data for processing when request reaches front of queue
             Task { @MainActor in
@@ -668,33 +719,40 @@ class WorkingHTTPServer {
                 success: true,
                 requestId: requestId,
                 message: "Request queued successfully",
-                queuePosition: await MainActor.run { queueRequest.queuePosition },
-                estimatedWaitTime: await MainActor.run { queueRequest.estimatedWaitTime }
+                queuePosition: position,
+                estimatedWaitTime: estimatedWait
             )
 
             let encoder = JSONEncoder()
             encoder.outputFormatting = .prettyPrinted
             let responseData = try encoder.encode(queueResponse)
 
-            let position = await MainActor.run { queueRequest.queuePosition }
             logger.info("📤 CONN-\(connectionId): Returning queue response - Position: \(position)")
             return HTTPResponse.success(data: responseData, contentType: "application/json")
-        } else {
-            // Fall back to old immediate processing system
-            logger.debug("⚠️ CONN-\(connectionId): API Server not available, falling back to immediate processing")
-            return await handleImmediateTranscription(requestId: requestId, fileData: fileData, filename: filename, connectionId: connectionId)
         }
     }
 
     /// Process a queued transcription when it reaches the front of the queue
     private func processQueuedTranscription(queueRequest: APITranscriptionRequest, audioData: Data, filename: String?, connectionId: String) async {
         // Wait for this request to become the current processing request
-        while await MainActor.run(body: { apiServer?.currentProcessingRequest?.id != queueRequest.id }) {
-            // Check if request was cancelled
-            let status = await MainActor.run { queueRequest.status }
-            if status == .cancelled {
-                logger.info("❌ CONN-\(connectionId): Request was cancelled while waiting in queue")
-                return
+        while true {
+            let shouldContinue = await MainActor.run {
+                // Check if request was cancelled
+                if queueRequest.status == .cancelled {
+                    return false // Exit loop
+                }
+
+                // Check if this is the current processing request
+                return apiServer?.currentProcessingRequest?.id != queueRequest.id
+            }
+
+            if !shouldContinue {
+                if queueRequest.status == .cancelled {
+                    logger.info("❌ CONN-\(connectionId): Request was cancelled while waiting in queue")
+                    return
+                } else {
+                    break // This is now the current processing request
+                }
             }
 
             // Wait a bit before checking again
@@ -921,6 +979,12 @@ class WorkingHTTPServer {
 }
 
 // MARK: - Supporting Types
+
+private enum QueueResult {
+    case success(request: APITranscriptionRequest, position: Int, estimatedWait: TimeInterval)
+    case duplicate(queueSize: Int)
+    case queueFull(queueSize: Int)
+}
 
 struct HTTPRequest {
     let method: String

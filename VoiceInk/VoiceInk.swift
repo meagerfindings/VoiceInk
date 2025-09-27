@@ -124,7 +124,9 @@ struct VoiceInkApp: App {
                         
                         // Auto-start API server if enabled
                         if UserDefaults.standard.bool(forKey: "APIServerAutoStart") {
-                            apiServer.start()
+                            Task {
+                                await apiServer.start()
+                            }
                         }
                         
                         // Start the automatic audio cleanup process only if transcript cleanup is not enabled

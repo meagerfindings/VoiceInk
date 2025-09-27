@@ -1008,22 +1008,20 @@ class TranscriptionAPIServer: ObservableObject, WorkingHTTPServerDelegate {
         logger.info("✅ Power monitoring integration setup complete")
     }
     
-    func start() {
+    func start() async {
         guard !isRunning else { return }
-        
+
         serverStartTime = Date()
         requestCount = 0
         totalProcessingTime = 0
-        
-        // Ensure a model is loaded or selected
-        Task { @MainActor in
-            await ensureModelIsReady()
-        }
-        
+
+        // Ensure a model is loaded or selected BEFORE starting the HTTP server
+        await ensureModelIsReady()
+
         // Connect processor to this API server for state tracking
         transcriptionProcessor.apiServer = self
         transcriptionProcessor.apiHandler.apiServer = self
-        
+
         // Create and configure HTTP server
         let allowNetworkAccess = UserDefaults.standard.bool(forKey: "APIServerAllowNetworkAccess")
         httpServer = WorkingHTTPServer(
@@ -1033,7 +1031,7 @@ class TranscriptionAPIServer: ObservableObject, WorkingHTTPServerDelegate {
         )
         httpServer?.delegate = self
         httpServer?.apiServer = self
-        
+
         // Start HTTP server
         do {
             try httpServer?.start()
@@ -1041,7 +1039,7 @@ class TranscriptionAPIServer: ObservableObject, WorkingHTTPServerDelegate {
             logger.error("Failed to start HTTP server: \(error)")
             lastError = error.localizedDescription
         }
-        
+
         logger.info("API server coordinator starting on port \(self.port)")
     }
     

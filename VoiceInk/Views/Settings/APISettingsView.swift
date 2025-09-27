@@ -25,7 +25,9 @@ struct APISettingsView: View {
                             apiServer.stop()
                         } else {
                             saveSettings()
-                            apiServer.start()
+                            Task {
+                                await apiServer.start()
+                            }
                         }
                     }
                     .buttonStyle(.borderedProminent)
@@ -64,7 +66,9 @@ struct APISettingsView: View {
                             // Restart server with new settings
                             apiServer.stop()
                             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                                apiServer.start()
+                                Task {
+                                    await apiServer.start()
+                                }
                             }
                         }
                     }

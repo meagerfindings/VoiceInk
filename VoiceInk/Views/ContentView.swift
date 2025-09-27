@@ -169,12 +169,8 @@ struct ContentView: View {
     
     
     private var isSetupComplete: Bool {
-        hasLoadedData &&
-        whisperState.currentTranscriptionModel != nil &&
-        hotkeyManager.selectedHotkey1 != .none &&
-        AXIsProcessTrusted()
-        // Removed screen capture check to allow dashboard access
-        // && CGPreflightScreenCaptureAccess()
+        // Always allow dashboard access - permissions setup disabled per user request
+        hasLoadedData
     }
 
     var body: some View {

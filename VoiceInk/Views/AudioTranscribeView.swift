@@ -7,6 +7,7 @@ struct AudioTranscribeView: View {
     @Environment(\.modelContext) private var modelContext
     @EnvironmentObject private var whisperState: WhisperState
     @StateObject private var transcriptionManager = AudioTranscriptionManager.shared
+    @StateObject private var fileWatcherManager = FileWatcherManager.shared
     @State private var isDropTargeted = false
     @State private var selectedAudioURL: URL?
     @State private var isAudioFileSelected = false
@@ -18,19 +19,27 @@ struct AudioTranscribeView: View {
             Color(NSColor.controlBackgroundColor)
                 .ignoresSafeArea()
             
-            VStack(spacing: 0) {
-                if transcriptionManager.isProcessing {
-                    processingView
-                } else {
-                    dropZoneView
-                }
-                
-                Divider()
-                    .padding(.vertical)
-                
-                // Show current transcription result
-                if let transcription = transcriptionManager.currentTranscription {
-                    TranscriptionResultView(transcription: transcription)
+            ScrollView {
+                VStack(spacing: 0) {
+                    if transcriptionManager.isProcessing {
+                        processingView
+                    } else {
+                        dropZoneView
+                    }
+
+                    Divider()
+                        .padding(.vertical)
+
+                    // File Watcher Section
+                    fileWatcherSection
+
+                    Divider()
+                        .padding(.vertical)
+
+                    // Show current transcription result
+                    if let transcription = transcriptionManager.currentTranscription {
+                        TranscriptionResultView(transcription: transcription)
+                    }
                 }
             }
         }
@@ -55,6 +64,9 @@ struct AudioTranscribeView: View {
                 // Do not auto-start; only select file for manual transcription
                 validateAndSetAudioFile(url)
             }
+        }
+        .onAppear {
+            fileWatcherManager.configure(modelContext: modelContext, whisperState: whisperState)
         }
     }
     
@@ -269,5 +281,151 @@ struct AudioTranscribeView: View {
         let minutes = Int(duration) / 60
         let seconds = Int(duration) % 60
         return String(format: "%d:%02d", minutes, seconds)
+    }
+
+    private var fileWatcherSection: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Folder Watcher")
+                        .font(.headline)
+
+                    Text("Automatically transcribe and delete files dropped into watched folders")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+
+                Spacer()
+
+                HStack(spacing: 12) {
+                    Button(action: {
+                        if fileWatcherManager.isWatching {
+                            fileWatcherManager.stopWatching()
+                        } else {
+                            fileWatcherManager.startWatching()
+                        }
+                    }) {
+                        Label(
+                            fileWatcherManager.isWatching ? "Stop Watching" : "Start Watching",
+                            systemImage: fileWatcherManager.isWatching ? "stop.circle.fill" : "play.circle.fill"
+                        )
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(fileWatcherManager.watchedPairs.isEmpty)
+
+                    Button(action: addWatcherPair) {
+                        Image(systemName: "plus.circle.fill")
+                            .font(.title2)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Add folder pair")
+                }
+            }
+
+            if fileWatcherManager.watchedPairs.isEmpty {
+                VStack(spacing: 12) {
+                    Image(systemName: "folder.badge.plus")
+                        .font(.system(size: 32))
+                        .foregroundColor(.secondary)
+
+                    Text("No folder pairs configured")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+
+                    Text("Add a folder pair to automatically transcribe files")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+
+                    Button("Add First Folder Pair", action: addWatcherPair)
+                        .buttonStyle(.bordered)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 32)
+            } else {
+                LazyVStack(spacing: 12) {
+                    ForEach(fileWatcherManager.watchedPairs, id: \.id) { pair in
+                        FileWatcherRowView(
+                            pair: pair,
+                            onRemove: {
+                                fileWatcherManager.removeWatcherPair(pair)
+                            },
+                            onToggleEnabled: {
+                                fileWatcherManager.togglePairEnabled(pair)
+                            },
+                            onUpdateInputFolder: { url in
+                                pair.inputFolderPath = url.path
+                                fileWatcherManager.saveWatchedPairs()
+                            },
+                            onUpdateOutputFolder: { url in
+                                pair.outputFolderPath = url.path
+                                fileWatcherManager.saveWatchedPairs()
+                            }
+                        )
+                    }
+                }
+            }
+
+            if fileWatcherManager.isWatching {
+                HStack(spacing: 8) {
+                    Circle()
+                        .fill(Color.green)
+                        .frame(width: 8, height: 8)
+                        .scaleEffect(fileWatcherManager.processingFiles.isEmpty ? 1.0 : 1.5)
+                        .animation(.easeInOut(duration: 0.6).repeatForever(autoreverses: true), value: fileWatcherManager.processingFiles.isEmpty)
+
+                    Text("Watching \(fileWatcherManager.watchedPairs.filter(\.isEnabled).count) folder(s)")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+
+                    if !fileWatcherManager.processingFiles.isEmpty {
+                        Text("• Processing \(fileWatcherManager.processingFiles.count) file(s)")
+                            .font(.caption)
+                            .foregroundColor(.blue)
+                    }
+
+                    if !fileWatcherManager.cleanupFailedFiles.isEmpty {
+                        Text("• \(fileWatcherManager.cleanupFailedFiles.count) cleanup issue(s)")
+                            .font(.caption)
+                            .foregroundColor(.orange)
+                    }
+
+                    Spacer()
+                }
+                .padding(.top, 8)
+            }
+        }
+        .padding()
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color(NSColor.controlBackgroundColor).opacity(0.3))
+        )
+        .padding(.horizontal)
+    }
+
+    private func addWatcherPair() {
+        let inputPanel = NSOpenPanel()
+        inputPanel.allowsMultipleSelection = false
+        inputPanel.canChooseDirectories = true
+        inputPanel.canChooseFiles = false
+        inputPanel.title = "Select Input Folder to Watch"
+        inputPanel.message = "Choose the folder where audio files will be dropped for automatic transcription"
+
+        guard inputPanel.runModal() == .OK, let inputURL = inputPanel.url else {
+            return
+        }
+
+        let outputPanel = NSOpenPanel()
+        outputPanel.allowsMultipleSelection = false
+        outputPanel.canChooseDirectories = true
+        outputPanel.canChooseFiles = false
+        outputPanel.title = "Select Output Folder"
+        outputPanel.message = "Choose the folder where transcription files will be saved"
+
+        guard outputPanel.runModal() == .OK, let outputURL = outputPanel.url else {
+            return
+        }
+
+        fileWatcherManager.addWatcherPair(inputFolder: inputURL, outputFolder: outputURL)
     }
 }

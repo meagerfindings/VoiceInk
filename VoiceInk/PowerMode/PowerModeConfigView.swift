@@ -36,13 +36,31 @@ struct ConfigurationView: View {
     // New state for screen capture toggle
     @State private var useScreenCapture = false
     @State private var isAutoSendEnabled = false
+    @State private var isDefault = false
     
     // State for prompt editing (similar to EnhancementSettingsView)
     @State private var isEditingPrompt = false
     @State private var selectedPromptForEdit: CustomPrompt?
+
+    private func languageSelectionDisabled() -> Bool {
+        guard let selectedModelName = effectiveModelName,
+              let model = whisperState.allAvailableModels.first(where: { $0.name == selectedModelName })
+        else {
+            return false
+        }
+        return model.provider == .parakeet || model.provider == .gemini
+    }
     
     // Whisper state for model selection
     @EnvironmentObject private var whisperState: WhisperState
+    
+    // Computed property to check if current config is the default
+    private var isCurrentConfigDefault: Bool {
+        if case .edit(let config) = mode {
+            return config.isDefault
+        }
+        return false
+    }
     
     private var filteredApps: [(url: URL, name: String, bundleId: String, icon: NSImage)] {
         if searchText.isEmpty {
@@ -77,6 +95,7 @@ struct ConfigurationView: View {
             _selectedEmoji = State(initialValue: "✏️")
             _useScreenCapture = State(initialValue: false)
             _isAutoSendEnabled = State(initialValue: false)
+            _isDefault = State(initialValue: false)
             // Default to current global AI provider/model for new configurations - use UserDefaults only
             _selectedAIProvider = State(initialValue: UserDefaults.standard.string(forKey: "selectedAIProvider"))
             _selectedAIModel = State(initialValue: nil) // Initialize to nil and set it after view appears
@@ -93,6 +112,7 @@ struct ConfigurationView: View {
             _websiteConfigs = State(initialValue: latestConfig.urlConfigs ?? [])
             _useScreenCapture = State(initialValue: latestConfig.useScreenCapture)
             _isAutoSendEnabled = State(initialValue: latestConfig.isAutoSendEnabled)
+            _isDefault = State(initialValue: latestConfig.isDefault)
             _selectedAIProvider = State(initialValue: latestConfig.selectedAIProvider)
             _selectedAIModel = State(initialValue: latestConfig.selectedAIModel)
         }
@@ -131,33 +151,48 @@ struct ConfigurationView: View {
             ScrollView {
                 VStack(spacing: 20) {
                     // Main Input Section
-                    HStack(spacing: 16) {
-                        Button(action: {
-                            isShowingEmojiPicker.toggle()
-                        }) {
-                            ZStack {
-                                Circle()
-                                    .fill(Color.accentColor.opacity(0.15))
-                                    .frame(width: 48, height: 48)
-                                
-                                Text(selectedEmoji)
-                                    .font(.system(size: 24))
+                    VStack(spacing: 16) {
+                        HStack(spacing: 16) {
+                            Button(action: {
+                                isShowingEmojiPicker.toggle()
+                            }) {
+                                ZStack {
+                                    Circle()
+                                        .fill(Color.accentColor.opacity(0.15))
+                                        .frame(width: 48, height: 48)
+                                    
+                                    Text(selectedEmoji)
+                                        .font(.system(size: 24))
+                                }
                             }
-                        }
-                        .buttonStyle(.plain)
-                        .popover(isPresented: $isShowingEmojiPicker, arrowEdge: .bottom) {
-                            EmojiPickerView(
-                                selectedEmoji: $selectedEmoji,
-                                isPresented: $isShowingEmojiPicker
-                            )
+                            .buttonStyle(.plain)
+                            .popover(isPresented: $isShowingEmojiPicker, arrowEdge: .bottom) {
+                                EmojiPickerView(
+                                    selectedEmoji: $selectedEmoji,
+                                    isPresented: $isShowingEmojiPicker
+                                )
+                            }
+                            
+                            TextField("Name your power mode", text: $configName)
+                                .font(.system(size: 18, weight: .bold))
+                                .textFieldStyle(.plain)
+                                .foregroundColor(.primary)
+                                .tint(.accentColor)
+                                .focused($isNameFieldFocused)
                         }
                         
-                        TextField("Name your power mode", text: $configName)
-                            .font(.system(size: 18, weight: .bold))
-                            .textFieldStyle(.plain)
-                            .foregroundColor(.primary)
-                            .tint(.accentColor)
-                            .focused($isNameFieldFocused)
+                        // Default Power Mode Toggle
+                        HStack {
+                            Toggle("Set as default power mode", isOn: $isDefault)
+                                .font(.system(size: 14))
+                            
+                            InfoTip(
+                                title: "Default Power Mode",
+                                message: "Default power mode is used when no specific app or website matches are found"
+                            )
+                            
+                            Spacer()
+                        }
                     }
                     .padding(.horizontal, 20)
                     .padding(.vertical, 16)
@@ -348,9 +383,21 @@ struct ConfigurationView: View {
                             }
                         }
                         
-                        if let selectedModel = effectiveModelName,
-                           let modelInfo = whisperState.allAvailableModels.first(where: { $0.name == selectedModel }),
-                           modelInfo.isMultilingualModel {
+                        if languageSelectionDisabled() {
+                            HStack {
+                                Text("Language")
+                                    .font(.subheadline)
+                                    .foregroundColor(.secondary)
+                                
+                                Text("Autodetected")
+                                    .font(.subheadline)
+                                    .foregroundColor(.secondary)
+                                
+                                Spacer()
+                            }
+                        } else if let selectedModel = effectiveModelName,
+                                  let modelInfo = whisperState.allAvailableModels.first(where: { $0.name == selectedModel }),
+                                  modelInfo.isMultilingualModel {
                             
                             let languageBinding = Binding<String?>(
                                 get: {
@@ -566,12 +613,22 @@ struct ConfigurationView: View {
                     .background(CardBackground(isSelected: false))
                     .padding(.horizontal)
                     
-                    VoiceInkButton(
-                        title: mode.isAdding ? "Add New Power Mode" : "Save Changes",
-                        action: saveConfiguration,
-                        isDisabled: !canSave
-                    )
-                    .frame(maxWidth: .infinity)
+                    HStack {
+                        Spacer()
+                        Button(action: saveConfiguration) {
+                            Text(mode.isAdding ? "Add New Power Mode" : "Save Changes")
+                                .font(.headline)
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 8)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 10)
+                                        .fill(canSave ? .green : .green.opacity(0.5))
+                                )
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(!canSave)
+                    }
                     .padding(.horizontal)
                 }
                 .padding(.vertical)
@@ -649,7 +706,8 @@ struct ConfigurationView: View {
                     useScreenCapture: useScreenCapture,
                     selectedAIProvider: selectedAIProvider,
                     selectedAIModel: selectedAIModel,
-                    isAutoSendEnabled: isAutoSendEnabled
+                    isAutoSendEnabled: isAutoSendEnabled,
+                    isDefault: isDefault
                 )
         case .edit(let config):
             var updatedConfig = config
@@ -665,6 +723,7 @@ struct ConfigurationView: View {
             updatedConfig.isAutoSendEnabled = isAutoSendEnabled
             updatedConfig.selectedAIProvider = selectedAIProvider
             updatedConfig.selectedAIModel = selectedAIModel
+            updatedConfig.isDefault = isDefault
             return updatedConfig
         }
     }
@@ -676,28 +735,48 @@ struct ConfigurationView: View {
         let systemAppURLs = FileManager.default.urls(for: .applicationDirectory, in: .systemDomainMask)
         let allAppURLs = userAppURLs + localAppURLs + systemAppURLs
         
-        let apps = allAppURLs.flatMap { baseURL -> [URL] in
-            let enumerator = FileManager.default.enumerator(
-                at: baseURL,
-                includingPropertiesForKeys: [.isApplicationKey, .isDirectoryKey],
-                options: [.skipsHiddenFiles]
-            )
+        var allApps: [URL] = []
+        
+        func scanDirectory(_ baseURL: URL, depth: Int = 0) {
+            // Prevent infinite recursion in case of circular symlinks
+            guard depth < 5 else { return }
             
-            return enumerator?.compactMap { item -> URL? in
-                guard let url = item as? URL else { return nil }
+            guard let enumerator = FileManager.default.enumerator(
+                at: baseURL,
+                includingPropertiesForKeys: [.isApplicationKey, .isDirectoryKey, .isSymbolicLinkKey],
+                options: [.skipsHiddenFiles]
+            ) else { return }
+            
+            for item in enumerator {
+                guard let url = item as? URL else { continue }
                 
-                // If it's an app, return it and skip descending into it
-                if url.pathExtension == "app" {
-                    enumerator?.skipDescendants()
-                    return url
+                let resolvedURL = url.resolvingSymlinksInPath()
+                
+                // If it's an app, add it and skip descending into it
+                if resolvedURL.pathExtension == "app" {
+                    allApps.append(resolvedURL)
+                    enumerator.skipDescendants()
+                    continue
                 }
                 
-                // Continue searching in directories
-                return nil
-            } ?? []
+                // Check if this is a symlinked directory we should traverse manually
+                var isDirectory: ObjCBool = false
+                if url != resolvedURL && 
+                   FileManager.default.fileExists(atPath: resolvedURL.path, isDirectory: &isDirectory) && 
+                   isDirectory.boolValue {
+                    // This is a symlinked directory - traverse it manually
+                    enumerator.skipDescendants()
+                    scanDirectory(resolvedURL, depth: depth + 1)
+                }
+            }
         }
         
-        installedApps = apps.compactMap { url in
+        // Scan all app directories
+        for baseURL in allAppURLs {
+            scanDirectory(baseURL)
+        }
+        
+        installedApps = allApps.compactMap { url in
             guard let bundle = Bundle(url: url),
                   let bundleId = bundle.bundleIdentifier,
                   let name = (bundle.infoDictionary?["CFBundleName"] as? String) ??
@@ -731,6 +810,11 @@ struct ConfigurationView: View {
             powerModeManager.addConfiguration(config)
         case .edit:
             powerModeManager.updateConfiguration(config)
+        }
+        
+        // Handle default flag separately to ensure only one config is default
+        if isDefault {
+            powerModeManager.setAsDefault(configId: config.id)
         }
         
         presentationMode.wrappedValue.dismiss()

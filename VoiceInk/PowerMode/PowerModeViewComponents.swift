@@ -88,6 +88,7 @@ struct ConfigurationRow: View {
     let onEditConfig: (PowerModeConfig) -> Void
     @EnvironmentObject var enhancementService: AIEnhancementService
     @EnvironmentObject var whisperState: WhisperState
+    @State private var isHovering = false
     
     private let maxAppIconsToShow = 5
     
@@ -157,6 +158,15 @@ struct ConfigurationRow: View {
                     HStack(spacing: 6) {
                         Text(config.name)
                             .font(.system(size: 15, weight: .semibold))
+                        
+                        if config.isDefault {
+                            Text("Default")
+                                .font(.system(size: 11, weight: .medium))
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(Capsule().fill(Color.accentColor))
+                                .foregroundColor(.white)
+                        }
                     }
                     
                     HStack(spacing: 12) {
@@ -193,7 +203,7 @@ struct ConfigurationRow: View {
             .padding(.vertical, 12)
             .padding(.horizontal, 14)
             
-            if selectedModel != nil || selectedLanguage != nil || config.isAIEnhancementEnabled {
+            if selectedModel != nil || selectedLanguage != nil || config.isAIEnhancementEnabled || config.isAutoSendEnabled {
                 Divider()
                     .padding(.horizontal, 16)
                 
@@ -249,6 +259,22 @@ struct ConfigurationRow: View {
                         )
                     }
                     
+                    if config.isAutoSendEnabled {
+                        HStack(spacing: 4) {
+                            Image(systemName: "keyboard")
+                                .font(.system(size: 10))
+                            Text("Auto Send")
+                                .font(.caption)
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Capsule()
+                            .fill(Color(NSColor.controlBackgroundColor)))
+                        .overlay(
+                            Capsule()
+                                .stroke(Color(NSColor.separatorColor), lineWidth: 0.5)
+                        )
+                    }
                     if config.isAIEnhancementEnabled {
                         if config.useScreenCapture {
                             HStack(spacing: 4) {
@@ -279,7 +305,7 @@ struct ConfigurationRow: View {
                             .fill(Color.accentColor.opacity(0.1)))
                         .foregroundColor(.accentColor)
                     }
-                    
+
                     Spacer()
                 }
                 .padding(.vertical, 10)
@@ -288,6 +314,15 @@ struct ConfigurationRow: View {
     }
     .background(CardBackground(isSelected: isEditing))
     .opacity(config.isEnabled ? 1.0 : 0.5)
+
+    .onHover { hovering in
+        withAnimation(.easeInOut(duration: 0.15)) {
+            isHovering = hovering
+        }
+    }
+    .onTapGesture(count: 2) {
+        onEditConfig(config)
+    }
     .contextMenu {
         Button(action: {
             onEditConfig(config)
@@ -357,4 +392,4 @@ struct AppGridItem: View {
         }
         .buttonStyle(.plain)
     }
-} 
+}

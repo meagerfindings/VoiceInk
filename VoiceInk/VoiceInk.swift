@@ -3,6 +3,7 @@ import SwiftData
 import Sparkle
 import AppKit
 import OSLog
+import AppIntents
 
 @main
 struct VoiceInkApp: App {
@@ -17,6 +18,7 @@ struct VoiceInkApp: App {
     @StateObject private var enhancementService: AIEnhancementService
     @StateObject private var activeWindowService = ActiveWindowService.shared
     @AppStorage("hasCompletedOnboarding") private var hasCompletedOnboarding = false
+    @AppStorage("enableAnnouncements") private var enableAnnouncements = true
     
     // Audio cleanup manager for automatic deletion of old audio files
     private let audioCleanupManager = AudioCleanupManager.shared
@@ -78,11 +80,17 @@ struct VoiceInkApp: App {
         )
         _menuBarManager = StateObject(wrappedValue: menuBarManager)
         
-        // Configure ActiveWindowService with enhancementService
         let activeWindowService = ActiveWindowService.shared
         activeWindowService.configure(with: enhancementService)
         activeWindowService.configureWhisperState(whisperState)
         _activeWindowService = StateObject(wrappedValue: activeWindowService)
+        
+        // Ensure no lingering recording state from previous runs
+        Task {
+            await whisperState.resetOnLaunch()
+        }
+        
+        AppShortcuts.updateAppShortcutParameters()
     }
     
     var body: some Scene {
@@ -98,24 +106,39 @@ struct VoiceInkApp: App {
                     .modelContainer(container)
                     .onAppear {
                         updaterViewModel.silentlyCheckForUpdates()
+                        if enableAnnouncements {
+                            AnnouncementsService.shared.start()
+                        }
                         
-                        // Start the automatic audio cleanup process
-                        audioCleanupManager.startAutomaticCleanup(modelContext: container.mainContext)
-                        
-                        // Start the transcription auto-cleanup service for zero data retention
+                        // Start the transcription auto-cleanup service (handles immediate and scheduled transcript deletion)
                         transcriptionAutoCleanupService.startMonitoring(modelContext: container.mainContext)
+                        
+                        // Start the automatic audio cleanup process only if transcript cleanup is not enabled
+                        if !UserDefaults.standard.bool(forKey: "IsTranscriptionCleanupEnabled") {
+                            audioCleanupManager.startAutomaticCleanup(modelContext: container.mainContext)
+                        }
+                        
+                        // Process any pending open-file request now that the main ContentView is ready.
+                        if let pendingURL = appDelegate.pendingOpenFileURL {
+                            NotificationCenter.default.post(name: .navigateToDestination, object: nil, userInfo: ["destination": "Transcribe Audio"])
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                                NotificationCenter.default.post(name: .openFileForTranscription, object: nil, userInfo: ["url": pendingURL])
+                            }
+                            appDelegate.pendingOpenFileURL = nil
+                        }
                     }
                     .background(WindowAccessor { window in
                         WindowManager.shared.configureWindow(window)
                     })
                     .onDisappear {
+                        AnnouncementsService.shared.stop()
                         whisperState.unloadModel()
-                        
-                        // Stop the automatic audio cleanup process
-                        audioCleanupManager.stopAutomaticCleanup()
                         
                         // Stop the transcription auto-cleanup service
                         transcriptionAutoCleanupService.stopMonitoring()
+                        
+                        // Stop the automatic audio cleanup process
+                        audioCleanupManager.stopAutomaticCleanup()
                     }
             } else {
                 OnboardingView(hasCompletedOnboarding: $hasCompletedOnboarding)
@@ -169,6 +192,8 @@ struct VoiceInkApp: App {
 }
 
 class UpdaterViewModel: ObservableObject {
+    @AppStorage("autoUpdateCheck") private var autoUpdateCheck = true
+    
     private let updaterController: SPUStandardUpdaterController
     
     @Published var canCheckForUpdates = false
@@ -177,11 +202,15 @@ class UpdaterViewModel: ObservableObject {
         updaterController = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
         
         // Enable automatic update checking
-        updaterController.updater.automaticallyChecksForUpdates = true
+        updaterController.updater.automaticallyChecksForUpdates = autoUpdateCheck
         updaterController.updater.updateCheckInterval = 24 * 60 * 60
         
         updaterController.updater.publisher(for: \.canCheckForUpdates)
             .assign(to: &$canCheckForUpdates)
+    }
+    
+    func toggleAutoUpdates(_ value: Bool) {
+        updaterController.updater.automaticallyChecksForUpdates = value
     }
     
     func checkForUpdates() {

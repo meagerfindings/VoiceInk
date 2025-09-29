@@ -3,7 +3,6 @@ import Cocoa
 import KeyboardShortcuts
 import LaunchAtLogin
 import AVFoundation
-// Additional imports for Settings components
 
 struct SettingsView: View {
     @EnvironmentObject private var updaterViewModel: UpdaterViewModel
@@ -15,6 +14,8 @@ struct SettingsView: View {
     @ObservedObject private var mediaController = MediaController.shared
     @ObservedObject private var playbackController = PlaybackController.shared
     @AppStorage("hasCompletedOnboarding") private var hasCompletedOnboarding = true
+    @AppStorage("autoUpdateCheck") private var autoUpdateCheck = true
+    @AppStorage("enableAnnouncements") private var enableAnnouncements = true
     @State private var showResetOnboardingAlert = false
     @State private var currentShortcut = KeyboardShortcuts.getShortcut(for: .toggleMiniRecorder)
     @State private var isCustomCancelEnabled = false
@@ -23,10 +24,9 @@ struct SettingsView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 24) {
-                // Hotkey Selection Section
                 SettingsSection(
                     icon: "command.circle",
-                    title: "VoiceInk Shortcut",
+                    title: "VoiceInk Shortcuts",
                     subtitle: "Choose how you want to trigger VoiceInk"
                 ) {
                     VStack(alignment: .leading, spacing: 18) {
@@ -36,7 +36,6 @@ struct SettingsView: View {
                             shortcutName: .toggleMiniRecorder
                         )
 
-                        // Hotkey 2 Configuration (Conditional)
                         if hotkeyManager.selectedHotkey2 != .none {
                             Divider()
                             hotkeyView(
@@ -50,7 +49,6 @@ struct SettingsView: View {
                             )
                         }
 
-                        // "Add another hotkey" button
                         if hotkeyManager.selectedHotkey1 != .none && hotkeyManager.selectedHotkey2 == .none {
                             HStack {
                                 Spacer()
@@ -68,62 +66,151 @@ struct SettingsView: View {
                             .font(.system(size: 12))
                             .foregroundColor(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
-
-                        Divider()
-
-                        // Cancel Recording Override Toggle
-                        Toggle(isOn: $isCustomCancelEnabled) {
-                            Text("Override default double-tap Escape cancellation")
-                        }
-                        .toggleStyle(.switch)
-                        .onChange(of: isCustomCancelEnabled) { _, newValue in
-                            if !newValue {
-                                KeyboardShortcuts.setShortcut(nil, for: .cancelRecorder)
-                            }
-                        }
-                        
-                        // Show shortcut recorder only when override is enabled
-                        if isCustomCancelEnabled {
-                            HStack(spacing: 12) {
-                                Text("Custom Cancel Shortcut")
-                                    .font(.system(size: 13, weight: .medium))
-                                    .foregroundColor(.secondary)
-                                
-                                KeyboardShortcuts.Recorder(for: .cancelRecorder)
-                                    .controlSize(.small)
-                                
-                                Spacer()
-                            }
-                            .padding(.leading, 16)
-                            .transition(.opacity.combined(with: .move(edge: .top)))
-                        }
-
-                        Text("By default, double-tap Escape to cancel recordings. Enable override above for single-press custom cancellation (useful for Vim users).")
-                            .font(.system(size: 12))
-                            .foregroundColor(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .padding(.top, 8)
                     }
                 }
 
                 SettingsSection(
-                    icon: "doc.on.clipboard.fill",
-                    title: "Paste Last Transcription",
-                    subtitle: "Configure shortcut to paste your most recent transcription"
+                    icon: "keyboard.badge.ellipsis",
+                    title: "Other App Shortcuts",
+                    subtitle: "Additional shortcuts for VoiceInk"
                 ) {
-                    HStack(spacing: 12) {
-                        Text("Paste Shortcut")
-                            .font(.system(size: 13, weight: .medium))
-                            .foregroundColor(.secondary)
+                    VStack(alignment: .leading, spacing: 18) {
+                        // Paste Last Transcript (Original)
+                        HStack(spacing: 12) {
+                            Text("Paste Last Transcript(Original)")
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundColor(.secondary)
+                            
+                            KeyboardShortcuts.Recorder(for: .pasteLastTranscription)
+                                .controlSize(.small)
+                            
+                            InfoTip(
+                                title: "Paste Last Transcript(Original)",
+                                message: "Shortcut for pasting the most recent transcription."
+                            )
+                            
+                            Spacer()
+                        }
+
+                        // Paste Last Transcript (Enhanced)
+                        HStack(spacing: 12) {
+                            Text("Paste Last Transcript(Enhanced)")
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundColor(.secondary)
+                            
+                            KeyboardShortcuts.Recorder(for: .pasteLastEnhancement)
+                                .controlSize(.small)
+                            
+                            InfoTip(
+                                title: "Paste Last Transcript(Enhanced)",
+                                message: "Pastes the enhanced transcript if available, otherwise falls back to the original."
+                            )
+                            
+                            Spacer()
+                        }
+
                         
-                        KeyboardShortcuts.Recorder(for: .pasteLastTranscription)
-                            .controlSize(.small)
+
+                        // Retry Last Transcription
+                        HStack(spacing: 12) {
+                            Text("Retry Last Transcription")
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundColor(.secondary)
+
+                            KeyboardShortcuts.Recorder(for: .retryLastTranscription)
+                                .controlSize(.small)
+
+                            InfoTip(
+                                title: "Retry Last Transcription",
+                                message: "Re-transcribe the last recorded audio using the current model and copy the result."
+                            )
+
+                            Spacer()
+                        }
+
+                        Divider()
+
                         
-                        Spacer()
+                        
+                        // Custom Cancel Shortcut
+                        VStack(alignment: .leading, spacing: 12) {
+                            HStack(spacing: 8) {
+                                Toggle(isOn: $isCustomCancelEnabled.animation()) {
+                                    Text("Custom Cancel Shortcut")
+                                }
+                                .toggleStyle(.switch)
+                                .onChange(of: isCustomCancelEnabled) { _, newValue in
+                                    if !newValue {
+                                        KeyboardShortcuts.setShortcut(nil, for: .cancelRecorder)
+                                    }
+                                }
+                                
+                                InfoTip(
+                                    title: "Dismiss Recording",
+                                    message: "Shortcut for cancelling the current recording session. Default: double-tap Escape."
+                                )
+                            }
+                            
+                            if isCustomCancelEnabled {
+                                HStack(spacing: 12) {
+                                    Text("Cancel Shortcut")
+                                        .font(.system(size: 13, weight: .medium))
+                                        .foregroundColor(.secondary)
+                                    
+                                    KeyboardShortcuts.Recorder(for: .cancelRecorder)
+                                        .controlSize(.small)
+                                    
+                                    Spacer()
+                                }
+                                .padding(.leading, 16)
+                                .transition(.opacity.combined(with: .move(edge: .top)))
+                            }
+                        }
+
+                        Divider()
+
+                        // Middle-Click Toggle
+                        VStack(alignment: .leading, spacing: 12) {
+                            HStack(spacing: 8) {
+                                Toggle("Enable Middle-Click Toggle", isOn: $hotkeyManager.isMiddleClickToggleEnabled.animation())
+                                    .toggleStyle(.switch)
+                                
+                                InfoTip(
+                                    title: "Middle-Click Toggle",
+                                    message: "Use middle mouse button to toggle VoiceInk recording."
+                                )
+                            }
+
+                            if hotkeyManager.isMiddleClickToggleEnabled {
+                                HStack(spacing: 8) {
+                                    Text("Activation Delay")
+                                        .font(.system(size: 13, weight: .medium))
+                                        .foregroundColor(.secondary)
+                                    
+                                    TextField("", value: $hotkeyManager.middleClickActivationDelay, formatter: {
+                                        let formatter = NumberFormatter()
+                                        formatter.numberStyle = .none
+                                        formatter.minimum = 0
+                                        return formatter
+                                    }())
+                                    .textFieldStyle(PlainTextFieldStyle())
+                                    .padding(EdgeInsets(top: 3, leading: 6, bottom: 3, trailing: 6))
+                                    .background(Color(NSColor.textBackgroundColor))
+                                    .cornerRadius(5)
+                                    .frame(width: 70)
+                                    
+                                    Text("ms")
+                                        .foregroundColor(.secondary)
+                                    
+                                    Spacer()
+                                }
+                                .padding(.leading, 16)
+                                .transition(.opacity.combined(with: .move(edge: .top)))
+                            }
+                        }
                     }
                 }
 
-                // Recording Feedback Section
                 SettingsSection(
                     icon: "speaker.wave.2.bubble.left.fill",
                     title: "Recording Feedback",
@@ -144,17 +231,20 @@ struct SettingsView: View {
                         .toggleStyle(.switch)
                         .help("Automatically mute system audio when recording starts and restore when recording stops")
 
-                        Toggle(isOn: $playbackController.isPauseMediaEnabled) {
-                            Text("Pause media during recording")
+                        Toggle(isOn: Binding(
+                            get: { UserDefaults.standard.bool(forKey: "preserveTranscriptInClipboard") },
+                            set: { UserDefaults.standard.set($0, forKey: "preserveTranscriptInClipboard") }
+                        )) {
+                            Text("Preserve transcript in clipboard")
                         }
                         .toggleStyle(.switch)
-                        .help("Automatically pause active media playback when recording starts and resume when recording stops")
-
+                        .help("Keep the transcribed text in clipboard instead of restoring the original clipboard content")
 
                     }
                 }
 
-                // Recorder Preference Section
+                ExperimentalFeaturesSection()
+
                 SettingsSection(
                     icon: "rectangle.on.rectangle",
                     title: "Recorder Style",
@@ -173,7 +263,6 @@ struct SettingsView: View {
                     }
                 }
 
-                // Paste Method Section
                 SettingsSection(
                     icon: "doc.on.clipboard",
                     title: "Paste Method",
@@ -191,22 +280,51 @@ struct SettingsView: View {
                     }
                 }
 
-                // App Appearance Section
                 SettingsSection(
-                    icon: "dock.rectangle",
-                    title: "App Appearance",
-                    subtitle: "Dock and Menu Bar options"
+                    icon: "gear",
+                    title: "General",
+                    subtitle: "Appearance, startup, and updates"
                 ) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Choose how VoiceInk appears in your system.")
-                            .settingsDescription()
-                        
+                    VStack(alignment: .leading, spacing: 12) {
                         Toggle("Hide Dock Icon (Menu Bar Only)", isOn: $menuBarManager.isMenuBarOnly)
                             .toggleStyle(.switch)
+                        
+                        LaunchAtLogin.Toggle()
+                            .toggleStyle(.switch)
+
+                        Toggle("Enable automatic update checks", isOn: $autoUpdateCheck)
+                            .toggleStyle(.switch)
+                            .onChange(of: autoUpdateCheck) { _, newValue in
+                                updaterViewModel.toggleAutoUpdates(newValue)
+                            }
+                        
+                        Toggle("Show app announcements", isOn: $enableAnnouncements)
+                            .toggleStyle(.switch)
+                            .onChange(of: enableAnnouncements) { _, newValue in
+                                if newValue {
+                                    AnnouncementsService.shared.start()
+                                } else {
+                                    AnnouncementsService.shared.stop()
+                                }
+                            }
+                        
+                        Button("Check for Updates Now") {
+                            updaterViewModel.checkForUpdates()
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.large)
+                        .disabled(!updaterViewModel.canCheckForUpdates)
+                        
+                        Divider()
+
+                        Button("Reset Onboarding") {
+                            showResetOnboardingAlert = true
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.large)
                     }
                 }
-
-                // Data & Privacy Section
+                
                 SettingsSection(
                     icon: "lock.shield",
                     title: "Data & Privacy",
@@ -215,59 +333,6 @@ struct SettingsView: View {
                     AudioCleanupSettingsView()
                 }
                 
-                // Startup Section
-                SettingsSection(
-                    icon: "power",
-                    title: "Startup",
-                    subtitle: "Launch options"
-                ) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Choose whether VoiceInk should start automatically when you log in.")
-                            .settingsDescription()
-                        
-                        LaunchAtLogin.Toggle()
-                            .toggleStyle(.switch)
-                    }
-                }
-                
-                // Updates Section
-                SettingsSection(
-                    icon: "arrow.triangle.2.circlepath",
-                    title: "Updates",
-                    subtitle: "Keep VoiceInk up to date"
-                ) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("VoiceInk automatically checks for updates on launch and every other day.")
-                            .settingsDescription()
-                        
-                        Button("Check for Updates Now") {
-                            updaterViewModel.checkForUpdates()
-                        }
-                        .buttonStyle(.bordered)
-                        .controlSize(.large)
-                        .disabled(!updaterViewModel.canCheckForUpdates)
-                    }
-                }
-
-                // Reset Onboarding Section
-                SettingsSection(
-                    icon: "arrow.counterclockwise",
-                    title: "Reset Onboarding",
-                    subtitle: "View the introduction again"
-                ) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Reset the onboarding process to view the app introduction again.")
-                            .settingsDescription()
-                        
-                        Button("Reset Onboarding") {
-                            showResetOnboardingAlert = true
-                        }
-                        .buttonStyle(.bordered)
-                        .controlSize(.large)
-                    }
-                }
-
-                // Data Management Section
                 SettingsSection(
                     icon: "arrow.up.arrow.down.circle",
                     title: "Data Management",
@@ -320,7 +385,6 @@ struct SettingsView: View {
         }
         .background(Color(NSColor.controlBackgroundColor))
         .onAppear {
-            // Initialize custom cancel shortcut state from stored preferences
             isCustomCancelEnabled = KeyboardShortcuts.getShortcut(for: .cancelRecorder) != nil
         }
         .alert("Reset Onboarding", isPresented: $showResetOnboardingAlert) {

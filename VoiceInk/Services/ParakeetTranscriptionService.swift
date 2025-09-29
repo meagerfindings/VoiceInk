@@ -1,4 +1,5 @@
 import Foundation
+import CoreML
 import AVFoundation
 import FluidAudio
 import os.log
@@ -7,15 +8,13 @@ import os.log
 
 class ParakeetTranscriptionService: TranscriptionService {
     private var asrManager: AsrManager?
+    private var vadManager: VadManager?
     private let customModelsDirectory: URL?
     @Published var isModelLoaded = false
-    
-    // Logger for Parakeet transcription service
     private let logger = Logger(subsystem: "com.voiceink.app", category: "ParakeetTranscriptionService")
     
     init(customModelsDirectory: URL? = nil) {
         self.customModelsDirectory = customModelsDirectory
-        logger.notice("🦜 ParakeetTranscriptionService initialized with directory: \(customModelsDirectory?.path ?? "default")")
     }
 
     func loadModel() async throws {
@@ -23,48 +22,16 @@ class ParakeetTranscriptionService: TranscriptionService {
             return
         }
 
-        logger.notice("🦜 Starting Parakeet model loading")
-        
-        do {
-            let asrConfig = ASRConfig(
-                maxSymbolsPerFrame: 3,
-                realtimeMode: true,
-                chunkSizeMs: 1500,
-                tdtConfig: TdtConfig(
-                    durations: [0, 1, 2, 3, 4],
-                    maxSymbolsPerStep: 3
-                )
-            )
-            asrManager = AsrManager(config: asrConfig)
-            
-            let models: AsrModels
-            if let customDirectory = customModelsDirectory {
-                logger.notice("🦜 Loading models from custom directory: \(customDirectory.path)")
-                models = try await AsrModels.downloadAndLoad(to: customDirectory)
-            } else {
-                logger.notice("🦜 Loading models from default directory")
-                models = try await AsrModels.downloadAndLoad()
+        if let customModelsDirectory {
+            do {
+                asrManager = AsrManager(config: .default)
+                let models = try await AsrModels.load(from: customModelsDirectory)
+                try await asrManager?.initialize(models: models)
+                isModelLoaded = true
+            } catch {
+                isModelLoaded = false
+                asrManager = nil
             }
-            
-            try await asrManager?.initialize(models: models)
-            isModelLoaded = true
-            logger.notice("🦜 Parakeet model loaded successfully")
-            
-        } catch let error as ASRError {
-            logger.notice("🦜 Parakeet-specific error loading model: \(error.localizedDescription)")
-            isModelLoaded = false
-            asrManager = nil
-            throw error
-        } catch let error as AsrModelsError {
-            logger.notice("🦜 Parakeet model management error loading model: \(error.localizedDescription)")
-            isModelLoaded = false
-            asrManager = nil
-            throw error
-        } catch {
-            logger.notice("🦜 Unexpected error loading Parakeet model: \(error.localizedDescription)")
-            isModelLoaded = false
-            asrManager = nil
-            throw error
         }
     }
 
@@ -73,47 +40,65 @@ class ParakeetTranscriptionService: TranscriptionService {
             try await loadModel()
         }
 
-        guard let asrManager = asrManager else {
-            logger.notice("🦜 Parakeet manager is still nil after attempting to load the model.")
-            throw ASRError.notInitialized
-        }
+		guard let asrManager = asrManager else {
+			throw ASRError.notInitialized
+		}
         
         let audioSamples = try readAudioSamples(from: audioURL)
-        
-        // Validate audio data before transcription
-        guard audioSamples.count >= 16000 else {
-            logger.notice("🦜 Audio too short for transcription: \(audioSamples.count) samples")
-            throw ASRError.invalidAudioData
+
+        let durationSeconds = Double(audioSamples.count) / 16000.0
+
+        let isVADEnabled = UserDefaults.standard.object(forKey: "IsVADEnabled") as? Bool ?? true
+
+        let speechAudio: [Float]
+        if durationSeconds < 20.0 || !isVADEnabled {
+            speechAudio = audioSamples
+        } else {
+            let vadConfig = VadConfig(threshold: 0.7)
+            if vadManager == nil, let customModelsDirectory {
+                do {
+                    vadManager = try await VadManager(
+                        config: vadConfig,
+                        modelDirectory: customModelsDirectory.deletingLastPathComponent()
+                    )
+                } catch {
+                    // Silent failure
+                }
+            }
+
+            do {
+                if let vadManager {
+                    let segments = try await vadManager.segmentSpeechAudio(audioSamples)
+                    if segments.isEmpty {
+                        speechAudio = audioSamples
+                    } else {
+                        speechAudio = segments.flatMap { $0 }
+                    }
+                } else {
+                    speechAudio = audioSamples
+                }
+            } catch {
+                speechAudio = audioSamples
+            }
         }
-        
-        let result = try await asrManager.transcribe(audioSamples)
-        
-        Task {
-            asrManager.cleanup()
-            isModelLoaded = false
-            logger.notice("🦜 Parakeet ASR models cleaned up from memory")
-        }
-        
-        // Check for empty results (vocabulary issue indicator)
-        if result.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            logger.notice("🦜 Warning: Empty transcription result for \(audioSamples.count) samples - possible vocabulary issue")
-        }
-        
-        if UserDefaults.standard.object(forKey: "IsTextFormattingEnabled") as? Bool ?? true {
-            return WhisperTextFormatter.format(result.text)
-        }
-        return result.text
+
+        let result = try await asrManager.transcribe(speechAudio)
+
+        asrManager.cleanup()
+        isModelLoaded = false
+        logger.notice("🦜 Parakeet ASR models cleaned up from memory")
+
+        let text = result.text
+
+        return text
     }
 
     private func readAudioSamples(from url: URL) throws -> [Float] {
         do {
             let data = try Data(contentsOf: url)
-            
-            // Check minimum file size for valid WAV header
-            guard data.count > 44 else { 
-                logger.notice("🦜 Audio file too small (\(data.count) bytes), expected > 44 bytes")
-                throw ASRError.invalidAudioData
-            }
+			guard data.count > 44 else {
+				throw ASRError.invalidAudioData
+			}
 
             let floats = stride(from: 44, to: data.count, by: 2).map {
                 return data[$0..<$0 + 2].withUnsafeBytes {
@@ -123,10 +108,9 @@ class ParakeetTranscriptionService: TranscriptionService {
             }
             
             return floats
-        } catch {
-            logger.notice("🦜 Failed to read audio file: \(error.localizedDescription)")
-            throw ASRError.invalidAudioData
-        }
+		} catch {
+			throw ASRError.invalidAudioData
+		}
     }
 
-} 
+}

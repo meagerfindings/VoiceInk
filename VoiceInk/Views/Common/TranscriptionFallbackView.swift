@@ -55,7 +55,7 @@ struct TranscriptionFallbackView: View {
                 .onAppear {
                     editableText = transcriptionText
                 }
-                .onChange(of: editableText) { newValue in
+                .onChange(of: editableText) { _, newValue in
                     onTextChange?(newValue)
                 }
         }

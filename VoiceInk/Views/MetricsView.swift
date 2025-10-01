@@ -10,6 +10,7 @@ struct MetricsView: View {
     @EnvironmentObject private var hotkeyManager: HotkeyManager
     @StateObject private var licenseViewModel = LicenseViewModel()
     @State private var hasLoadedData = false
+    @AppStorage("hasSkippedSetup") private var hasSkippedSetup = false
     let skipSetupCheck: Bool
     
     init(skipSetupCheck: Bool = false) {
@@ -67,10 +68,11 @@ struct MetricsView: View {
     }
     
     private var isSetupComplete: Bool {
-        hasLoadedData &&
+        hasSkippedSetup ||
+        (hasLoadedData &&
         whisperState.currentTranscriptionModel != nil &&
         hotkeyManager.selectedHotkey1 != .none &&
         AXIsProcessTrusted() &&
-        CGPreflightScreenCaptureAccess()
+        CGPreflightScreenCaptureAccess())
     }
 }

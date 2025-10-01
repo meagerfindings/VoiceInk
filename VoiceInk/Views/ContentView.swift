@@ -164,14 +164,16 @@ struct ContentView: View {
     @State private var hasLoadedData = false
     let appVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.0"
     @StateObject private var licenseViewModel = LicenseViewModel()
-    
-    
+    @AppStorage("hasSkippedSetup") private var hasSkippedSetup = false
+
+
     private var isSetupComplete: Bool {
-        hasLoadedData &&
+        hasSkippedSetup ||
+        (hasLoadedData &&
         whisperState.currentTranscriptionModel != nil &&
         hotkeyManager.selectedHotkey1 != .none &&
         AXIsProcessTrusted() &&
-        CGPreflightScreenCaptureAccess()
+        CGPreflightScreenCaptureAccess())
     }
 
     var body: some View {

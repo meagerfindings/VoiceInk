@@ -6,6 +6,7 @@ struct MetricsSetupView: View {
     @EnvironmentObject private var hotkeyManager: HotkeyManager
     @State private var isAccessibilityEnabled = AXIsProcessTrusted()
     @State private var isScreenRecordingEnabled = CGPreflightScreenCaptureAccess()
+    @AppStorage("hasSkippedSetup") private var hasSkippedSetup = false
     
     var body: some View {
         ScrollView {
@@ -52,7 +53,22 @@ struct MetricsSetupView: View {
                 // Action Button
                 actionButton
                     .frame(maxWidth: 400)
-                
+
+                // Skip Setup Button
+                Button(action: {
+                    hasSkippedSetup = true
+                }) {
+                    Text("Skip Setup - Use App Now")
+                        .font(.system(size: 15, weight: .medium))
+                        .foregroundColor(.secondary)
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 10)
+                        .background(Color.secondary.opacity(0.1))
+                        .cornerRadius(20)
+                }
+                .buttonStyle(.plain)
+                .padding(.top, 8)
+
                 // Help Text
                 helpText
             }

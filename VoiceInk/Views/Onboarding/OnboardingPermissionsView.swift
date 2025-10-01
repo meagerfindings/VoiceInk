@@ -80,18 +80,19 @@ struct OnboardingPermissionsView: View {
                     // Reusable background
                     OnboardingBackgroundView()
                     
-                    VStack(spacing: 40) {
-                        // Progress indicator
-                        HStack(spacing: 8) {
-                            ForEach(0..<permissions.count, id: \.self) { index in
-                                Circle()
-                                    .fill(index <= currentPermissionIndex ? Color.accentColor : Color.white.opacity(0.1))
-                                    .frame(width: 8, height: 8)
-                                    .scaleEffect(index == currentPermissionIndex ? 1.2 : 1.0)
-                                    .animation(.spring(response: 0.3, dampingFraction: 0.7), value: currentPermissionIndex)
+                    VStack(spacing: 0) {
+                        VStack(spacing: 40) {
+                            // Progress indicator
+                            HStack(spacing: 8) {
+                                ForEach(0..<permissions.count, id: \.self) { index in
+                                    Circle()
+                                        .fill(index <= currentPermissionIndex ? Color.accentColor : Color.white.opacity(0.1))
+                                        .frame(width: 8, height: 8)
+                                        .scaleEffect(index == currentPermissionIndex ? 1.2 : 1.0)
+                                        .animation(.spring(response: 0.3, dampingFraction: 0.7), value: currentPermissionIndex)
+                                }
                             }
-                        }
-                        .padding(.top, 40)
+                            .padding(.top, 40)
                         
                         // Current permission card
                         VStack(spacing: 30) {
@@ -214,25 +215,70 @@ struct OnboardingPermissionsView: View {
                         
                         // Action buttons
                         VStack(spacing: 16) {
-                            Button(action: requestPermission) {
-                                Text(getButtonTitle())
-                                    .font(.headline)
-                                    .foregroundColor(.white)
-                                    .frame(width: 200, height: 50)
-                                    .background(Color.accentColor)
-                                    .cornerRadius(25)
-                            }
-                            .buttonStyle(ScaleButtonStyle())
-                            
-                            if !permissionStates[currentPermissionIndex] && 
-                               permissions[currentPermissionIndex].type != .keyboardShortcut &&
-                               permissions[currentPermissionIndex].type != .audioDeviceSelection {
-                                SkipButton(text: "Skip for now") {
-                                    moveToNext()
+                            VStack(spacing: 16) {
+                                Button(action: requestPermission) {
+                                    Text(getButtonTitle())
+                                        .font(.headline)
+                                        .foregroundColor(.white)
+                                        .frame(width: 200, height: 50)
+                                        .background(Color.accentColor)
+                                        .cornerRadius(25)
+                                }
+                                .buttonStyle(ScaleButtonStyle())
+
+                                if !permissionStates[currentPermissionIndex] &&
+                                   permissions[currentPermissionIndex].type != .keyboardShortcut &&
+                                   permissions[currentPermissionIndex].type != .audioDeviceSelection {
+                                    SkipButton(text: "Skip for now") {
+                                        moveToNext()
+                                    }
                                 }
                             }
+                            .opacity(opacity)
+
+                            // Always show option to skip entire onboarding - OUTSIDE opacity animation
+                            Button(action: {
+                                hasCompletedOnboarding = true
+                            }) {
+                                Text("Skip Onboarding")
+                                    .font(.system(size: 15, weight: .semibold))
+                                    .foregroundColor(.white)
+                                    .padding(.horizontal, 24)
+                                    .padding(.vertical, 12)
+                                    .background(Color.white.opacity(0.2))
+                                    .cornerRadius(20)
+                            }
+                            .buttonStyle(.plain)
+                            .padding(.top, 10)
                         }
-                        .opacity(opacity)
+                        }
+
+                        Spacer()
+
+                        // ALWAYS VISIBLE SKIP BUTTON AT BOTTOM
+                        Button(action: {
+                            hasCompletedOnboarding = true
+                        }) {
+                            Text("Skip All Permissions & Go to Dashboard")
+                                .font(.system(size: 16, weight: .bold))
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 32)
+                                .padding(.vertical, 14)
+                                .background(
+                                    LinearGradient(
+                                        colors: [Color.accentColor.opacity(0.3), Color.accentColor.opacity(0.5)],
+                                        startPoint: .leading,
+                                        endPoint: .trailing
+                                    )
+                                )
+                                .cornerRadius(25)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 25)
+                                        .stroke(Color.white.opacity(0.3), lineWidth: 1)
+                                )
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.bottom, 30)
                     }
                     .padding()
                 }
@@ -484,7 +530,7 @@ struct OnboardingPermissionsView: View {
                 .controlSize(.large)
             }
         }
-        .onChange(of: binding.wrappedValue) { newValue in
+        .onChange(of: binding.wrappedValue) { _, newValue in
             onConfigured(newValue != .none)
         }
     }

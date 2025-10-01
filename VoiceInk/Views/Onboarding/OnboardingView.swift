@@ -53,9 +53,9 @@ struct OnboardingView: View {
                             
                             Spacer(minLength: geometry.size.height * 0.2)
                             
-                            // Bottom navigation
-                            if showSecondaryElements {
-                                VStack(spacing: 20) {
+                            // Bottom navigation - always show skip button
+                            VStack(spacing: 20) {
+                                if showSecondaryElements {
                                     Button(action: {
                                         withAnimation(.spring(response: 0.5, dampingFraction: 0.7)) {
                                             showPermissions = true
@@ -69,14 +69,22 @@ struct OnboardingView: View {
                                             .cornerRadius(25)
                                     }
                                     .buttonStyle(ScaleButtonStyle())
-                                    
-                                    SkipButton(text: "Skip Tour") {
-                                        hasCompletedOnboarding = true
-                                    }
                                 }
-                                .padding(.bottom, 35)
-                                .transition(.move(edge: .bottom).combined(with: .opacity))
+
+                                Button(action: {
+                                    hasCompletedOnboarding = true
+                                }) {
+                                    Text("Skip Onboarding")
+                                        .font(.system(size: 16, weight: .semibold))
+                                        .foregroundColor(.white)
+                                        .padding(.horizontal, 20)
+                                        .padding(.vertical, 10)
+                                        .background(Color.white.opacity(0.2))
+                                        .cornerRadius(20)
+                                }
+                                .buttonStyle(.plain)
                             }
+                            .padding(.bottom, 35)
                         }
                     }
                 }

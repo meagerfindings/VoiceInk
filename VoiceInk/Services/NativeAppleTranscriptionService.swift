@@ -68,7 +68,7 @@ class NativeAppleTranscriptionService: TranscriptionService {
         logger.notice("Starting Apple native transcription with SpeechAnalyzer.")
         
         let audioFile = try AVAudioFile(forReading: audioURL)
-        
+
         // Get the user's selected language in simple format and convert to BCP-47 format
         let selectedLanguage = UserDefaults.standard.string(forKey: "SelectedLanguage") ?? "en"
         let appleLocale = mapToAppleLocale(selectedLanguage)
@@ -148,15 +148,16 @@ class NativeAppleTranscriptionService: TranscriptionService {
     // Forward-compatibility: Use Any here because SpeechTranscriber is only available in future macOS SDKs.
     // This avoids referencing an unavailable SDK symbol while keeping the method shape for later adoption.
     @available(macOS 26, *)
-    private func ensureModelIsAvailable(for transcriber: SpeechTranscriber, locale: Locale) async throws {
+    private func ensureModelIsAvailable(for transcriber: Any, locale: Locale) async throws {
         #if canImport(Speech) && ENABLE_NATIVE_SPEECH_ANALYZER
+        guard let speechTranscriber = transcriber as? SpeechTranscriber else { return }
         let installedLocales = await SpeechTranscriber.installedLocales
         let isInstalled = installedLocales.map({ $0.identifier(.bcp47) }).contains(locale.identifier(.bcp47))
 
         if !isInstalled {
             logger.notice("Assets for '\(locale.identifier(.bcp47))' not installed. Requesting system download.")
             
-            if let request = try await AssetInventory.assetInstallationRequest(supporting: [transcriber]) {
+            if let request = try await AssetInventory.assetInstallationRequest(supporting: [speechTranscriber]) {
                 try await request.downloadAndInstall()
                 logger.notice("Asset download for '\(locale.identifier(.bcp47))' complete.")
             } else {
@@ -166,4 +167,4 @@ class NativeAppleTranscriptionService: TranscriptionService {
         }
         #endif
     }
-} 
+}

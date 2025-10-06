@@ -367,30 +367,83 @@ struct AudioTranscribeView: View {
             }
 
             if fileWatcherManager.isWatching {
-                HStack(spacing: 8) {
-                    Circle()
-                        .fill(Color.green)
-                        .frame(width: 8, height: 8)
-                        .scaleEffect(fileWatcherManager.processingFiles.isEmpty ? 1.0 : 1.5)
-                        .animation(.easeInOut(duration: 0.6).repeatForever(autoreverses: true), value: fileWatcherManager.processingFiles.isEmpty)
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 8) {
+                        Circle()
+                            .fill(Color.green)
+                            .frame(width: 8, height: 8)
+                            .scaleEffect(fileWatcherManager.processingFiles.isEmpty ? 1.0 : 1.5)
+                            .animation(.easeInOut(duration: 0.6).repeatForever(autoreverses: true), value: fileWatcherManager.processingFiles.isEmpty)
 
-                    Text("Watching \(fileWatcherManager.watchedPairs.filter(\.isEnabled).count) folder(s)")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-
-                    if !fileWatcherManager.processingFiles.isEmpty {
-                        Text("• Processing \(fileWatcherManager.processingFiles.count) file(s)")
+                        Text("Watching \(fileWatcherManager.watchedPairs.filter(\.isEnabled).count) folder(s)")
                             .font(.caption)
-                            .foregroundColor(.blue)
+                            .foregroundColor(.secondary)
+
+                        if !fileWatcherManager.queuedFiles.isEmpty {
+                            Text("• \(fileWatcherManager.queuedFiles.count) queued")
+                                .font(.caption)
+                                .foregroundColor(.orange)
+                        }
+
+                        if !fileWatcherManager.processingFiles.isEmpty {
+                            Text("• Processing \(fileWatcherManager.processingFiles.count) file(s)")
+                                .font(.caption)
+                                .foregroundColor(.blue)
+                        }
+
+                        if !fileWatcherManager.cleanupFailedFiles.isEmpty {
+                            Text("• \(fileWatcherManager.cleanupFailedFiles.count) cleanup issue(s)")
+                                .font(.caption)
+                                .foregroundColor(.orange)
+                        }
+
+                        Spacer()
                     }
 
-                    if !fileWatcherManager.cleanupFailedFiles.isEmpty {
-                        Text("• \(fileWatcherManager.cleanupFailedFiles.count) cleanup issue(s)")
-                            .font(.caption)
-                            .foregroundColor(.orange)
+                    // Show currently processing file
+                    if let currentFile = fileWatcherManager.currentlyProcessingFile {
+                        HStack(spacing: 8) {
+                            ProgressView()
+                                .scaleEffect(0.7)
+                                .frame(width: 12, height: 12)
+
+                            Text("Processing: \(currentFile.lastPathComponent)")
+                                .font(.caption2)
+                                .foregroundColor(.blue)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
                     }
 
-                    Spacer()
+                    // Show queued files
+                    if !fileWatcherManager.queuedFiles.isEmpty {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Queued files:")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+
+                            ForEach(fileWatcherManager.queuedFiles.prefix(5), id: \.self) { fileURL in
+                                HStack(spacing: 6) {
+                                    Image(systemName: "clock")
+                                        .font(.caption2)
+                                        .foregroundColor(.orange)
+
+                                    Text(fileURL.lastPathComponent)
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                }
+                            }
+
+                            if fileWatcherManager.queuedFiles.count > 5 {
+                                Text("+ \(fileWatcherManager.queuedFiles.count - 5) more")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                        .padding(.leading, 16)
+                    }
                 }
                 .padding(.top, 8)
             }

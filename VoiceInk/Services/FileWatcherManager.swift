@@ -11,10 +11,14 @@ class FileWatcherManager: ObservableObject {
     @Published var watchedPairs: [FileWatcherPair] = []
     @Published var processingFiles: Set<URL> = []
     @Published var cleanupFailedFiles: Set<URL> = []
+    @Published var queuedFiles: [URL] = []
+    @Published var currentlyProcessingFile: URL?
 
     private var fileSystemSources: [DispatchSourceFileSystemObject] = []
     private let queue = DispatchQueue(label: "com.voiceink.filewatcher", qos: .background)
     private let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "FileWatcherManager")
+    private var isProcessingQueue = false
+    private var fileToWatcherPairMap: [URL: FileWatcherPair] = [:]
 
     // Dependencies
     private var modelContext: ModelContext?
@@ -50,6 +54,10 @@ class FileWatcherManager: ObservableObject {
         isWatching = false
         // Clear cleanup failed files when stopping
         cleanupFailedFiles.removeAll()
+        // Clear queue when stopping
+        queuedFiles.removeAll()
+        currentlyProcessingFile = nil
+        fileToWatcherPairMap.removeAll()
         logger.info("Stopped watching all folder pairs")
     }
 
@@ -140,20 +148,52 @@ class FileWatcherManager: ObservableObject {
                 options: [.skipsHiddenFiles, .skipsSubdirectoryDescendants]
             )
 
-            for fileURL in files {
-                // Check if it's a supported audio/video file
-                guard SupportedMedia.isSupported(url: fileURL) else { continue }
+            Task { @MainActor in
+                for fileURL in files {
+                    // Check if it's a supported audio/video file
+                    guard SupportedMedia.isSupported(url: fileURL) else { continue }
 
-                // Avoid processing the same file multiple times
-                guard !processingFiles.contains(fileURL) else { continue }
+                    // Avoid queueing the same file multiple times
+                    guard !self.queuedFiles.contains(fileURL) else { continue }
+                    guard !self.processingFiles.contains(fileURL) else { continue }
 
-                Task { @MainActor in
-                    await self.processFile(fileURL: fileURL, pair: pair)
+                    // Add to queue and map to watcher pair
+                    self.queuedFiles.append(fileURL)
+                    self.fileToWatcherPairMap[fileURL] = pair
+                    self.logger.info("Queued file: \(fileURL.lastPathComponent)")
                 }
+
+                // Start processing the queue
+                await self.processQueue()
             }
         } catch {
             logger.error("Error scanning folder \(inputURL.path): \(error.localizedDescription)")
         }
+    }
+
+    private func processQueue() async {
+        // Prevent concurrent queue processing
+        guard !isProcessingQueue else { return }
+        guard !queuedFiles.isEmpty else { return }
+
+        isProcessingQueue = true
+
+        while let fileURL = queuedFiles.first {
+            // Remove from queue and get associated watcher pair
+            queuedFiles.removeFirst()
+            guard let pair = fileToWatcherPairMap[fileURL] else {
+                logger.error("No watcher pair found for file: \(fileURL.lastPathComponent)")
+                continue
+            }
+
+            // Process this file
+            await processFile(fileURL: fileURL, pair: pair)
+
+            // Clean up the mapping
+            fileToWatcherPairMap.removeValue(forKey: fileURL)
+        }
+
+        isProcessingQueue = false
     }
 
     private func processFile(fileURL: URL, pair: FileWatcherPair) async {
@@ -166,6 +206,7 @@ class FileWatcherManager: ObservableObject {
         guard !processingFiles.contains(fileURL) else { return }
 
         processingFiles.insert(fileURL)
+        currentlyProcessingFile = fileURL
         logger.info("Processing file: \(fileURL.lastPathComponent)")
 
         do {
@@ -238,6 +279,7 @@ class FileWatcherManager: ObservableObject {
         }
 
         processingFiles.remove(fileURL)
+        currentlyProcessingFile = nil
     }
 
     private func transcribeAudio(tempURL: URL, model: any TranscriptionModel, whisperState: WhisperState) async throws -> String {

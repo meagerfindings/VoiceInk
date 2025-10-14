@@ -144,7 +144,7 @@ class FileWatcherManager: ObservableObject {
         do {
             let files = try FileManager.default.contentsOfDirectory(
                 at: inputURL,
-                includingPropertiesForKeys: [.creationDateKey, .isRegularFileKey],
+                includingPropertiesForKeys: [.creationDateKey, .isRegularFileKey, .fileSizeKey],
                 options: [.skipsHiddenFiles, .skipsSubdirectoryDescendants]
             )
 
@@ -157,6 +157,12 @@ class FileWatcherManager: ObservableObject {
                     guard !self.queuedFiles.contains(fileURL) else { continue }
                     guard !self.processingFiles.contains(fileURL) else { continue }
 
+                    // Verify file is fully written by checking if it's stable
+                    guard await self.isFileStable(fileURL) else {
+                        self.logger.info("File not stable yet, will retry: \(fileURL.lastPathComponent)")
+                        continue
+                    }
+
                     // Add to queue and map to watcher pair
                     self.queuedFiles.append(fileURL)
                     self.fileToWatcherPairMap[fileURL] = pair
@@ -168,6 +174,23 @@ class FileWatcherManager: ObservableObject {
             }
         } catch {
             logger.error("Error scanning folder \(inputURL.path): \(error.localizedDescription)")
+        }
+    }
+
+    private func isFileStable(_ fileURL: URL) async -> Bool {
+        do {
+            let resources1 = try fileURL.resourceValues(forKeys: [.fileSizeKey])
+            let size1 = resources1.fileSize ?? 0
+            
+            try await Task.sleep(nanoseconds: 500_000_000)
+            
+            let resources2 = try fileURL.resourceValues(forKeys: [.fileSizeKey])
+            let size2 = resources2.fileSize ?? 0
+            
+            return size1 == size2 && size1 > 0
+        } catch {
+            logger.error("Failed to check file stability: \(error.localizedDescription)")
+            return false
         }
     }
 
@@ -205,31 +228,31 @@ class FileWatcherManager: ObservableObject {
 
         guard !processingFiles.contains(fileURL) else { return }
 
+        guard FileManager.default.fileExists(atPath: fileURL.path) else {
+            logger.warning("File no longer exists, skipping: \(fileURL.lastPathComponent)")
+            return
+        }
+
         processingFiles.insert(fileURL)
         currentlyProcessingFile = fileURL
         logger.info("Processing file: \(fileURL.lastPathComponent)")
 
         do {
-            // Get current model
             guard let currentModel = whisperState.currentTranscriptionModel else {
                 throw TranscriptionError.noModelSelected
             }
 
-            // Process audio
             let samples = try await audioProcessor.processAudioToSamples(fileURL)
             let audioAsset = AVURLAsset(url: fileURL)
             let duration = CMTimeGetSeconds(try await audioAsset.load(.duration))
 
-            // Create temporary copy for transcription
             let tempDirectory = FileManager.default.temporaryDirectory
             let tempFileName = "filewatcher_\(UUID().uuidString).wav"
             let tempURL = tempDirectory.appendingPathComponent(tempFileName)
             try audioProcessor.saveSamplesAsWav(samples: samples, to: tempURL)
 
-            // Transcribe using appropriate service
             let text = try await transcribeAudio(tempURL: tempURL, model: currentModel, whisperState: whisperState)
 
-            // Apply text formatting and replacements
             var finalText = text.trimmingCharacters(in: .whitespacesAndNewlines)
 
             if UserDefaults.standard.object(forKey: "IsTextFormattingEnabled") as? Bool ?? true {
@@ -240,13 +263,16 @@ class FileWatcherManager: ObservableObject {
                 finalText = WordReplacementService.shared.applyReplacements(to: finalText)
             }
 
-            // Save transcript to output folder
             let outputFileName = fileURL.deletingPathExtension().lastPathComponent + "_transcript.txt"
             let outputURL = pair.outputFolderURL.appendingPathComponent(outputFileName)
 
+            if !FileManager.default.fileExists(atPath: pair.outputFolderPath) {
+                try FileManager.default.createDirectory(at: pair.outputFolderURL, withIntermediateDirectories: true)
+                logger.info("Created output directory: \(pair.outputFolderPath)")
+            }
+
             try finalText.write(to: outputURL, atomically: true, encoding: .utf8)
 
-            // Create transcription record
             let transcription = Transcription(
                 text: finalText,
                 duration: duration,
@@ -257,20 +283,15 @@ class FileWatcherManager: ObservableObject {
             modelContext.insert(transcription)
             try modelContext.save()
 
-            // Clean up temp file
             try? FileManager.default.removeItem(at: tempURL)
 
-            // Delete the original input file after successful transcription
             do {
                 try FileManager.default.removeItem(at: fileURL)
-                // Remove from cleanup failed files if it was previously there
                 cleanupFailedFiles.remove(fileURL)
                 logger.info("Successfully processed and deleted file: \(fileURL.lastPathComponent) -> \(outputFileName)")
             } catch {
-                // Track files that failed cleanup
                 cleanupFailedFiles.insert(fileURL)
                 logger.error("Failed to delete input file \(fileURL.lastPathComponent) after transcription: \(error.localizedDescription)")
-                // Still log success since transcription worked
                 logger.info("Successfully processed file: \(fileURL.lastPathComponent) -> \(outputFileName) (file cleanup failed)")
             }
 

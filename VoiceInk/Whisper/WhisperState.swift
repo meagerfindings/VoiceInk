@@ -133,8 +133,29 @@ class WhisperState: NSObject, ObservableObject {
     
     func toggleRecord() async {
         if recordingState == .recording {
-            await recorder.stopRecording()
-            if let recordedFile {
+            do {
+                _ = try await recorder.stopRecording()
+                
+                guard let recordedFile = recordedFile else {
+                    logger.error("❌ No recorded file URL set")
+                    await MainActor.run {
+                        recordingState = .idle
+                    }
+                    return
+                }
+                
+                guard FileManager.default.fileExists(atPath: recordedFile.path) else {
+                    logger.error("❌ Recorded file does not exist at path: \(recordedFile.path)")
+                    await MainActor.run {
+                        recordingState = .idle
+                    }
+                    await NotificationManager.shared.showNotification(
+                        title: "Recording file not found",
+                        type: .error
+                    )
+                    return
+                }
+                
                 if !shouldCancelRecording {
                     let audioAsset = AVURLAsset(url: recordedFile)
                     let duration = (try? CMTimeGetSeconds(await audioAsset.load(.duration))) ?? 0.0
@@ -156,11 +177,16 @@ class WhisperState: NSObject, ObservableObject {
                     }
                     await cleanupModelResources()
                 }
-            } else {
-                logger.error("❌ No recorded file found after stopping recording")
+            } catch {
+                logger.error("❌ Failed to stop recording: \(error.localizedDescription)")
                 await MainActor.run {
                     recordingState = .idle
                 }
+                await NotificationManager.shared.showNotification(
+                    title: "Recording failed",
+                    type: .error
+                )
+                self.recordedFile = nil
             }
         } else {
             guard currentTranscriptionModel != nil else {

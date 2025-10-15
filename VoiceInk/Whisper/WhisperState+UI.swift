@@ -64,7 +64,11 @@ extension WhisperState {
         }
         
         if wasRecording {
-            await recorder.stopRecording()
+            do {
+                _ = try await recorder.stopRecording()
+            } catch {
+                logger.error("❌ Error stopping recording during dismiss: \(error.localizedDescription)")
+            }
         }
         
         hideRecorderPanel()
@@ -82,7 +86,11 @@ extension WhisperState {
     
     func resetOnLaunch() async {
         logger.notice("🔄 Resetting recording state on launch")
-        await recorder.stopRecording()
+        do {
+            _ = try await recorder.stopRecording()
+        } catch {
+            logger.warning("⚠️ Error stopping recorder during reset: \(error.localizedDescription)")
+        }
         hideRecorderPanel()
         await MainActor.run {
             isMiniRecorderVisible = false

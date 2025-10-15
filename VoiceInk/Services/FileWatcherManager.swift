@@ -253,7 +253,8 @@ class FileWatcherManager: ObservableObject {
 
             let text = try await transcribeAudio(tempURL: tempURL, model: currentModel, whisperState: whisperState)
 
-            var finalText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            var finalText = TranscriptionOutputFilter.filter(text)
+            finalText = finalText.trimmingCharacters(in: .whitespacesAndNewlines)
 
             if UserDefaults.standard.object(forKey: "IsTextFormattingEnabled") as? Bool ?? true {
                 finalText = WhisperTextFormatter.format(finalText)

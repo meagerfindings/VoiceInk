@@ -16,9 +16,12 @@ class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
     private var audioLevelCheckTask: Task<Void, Never>?
     private var audioMeterUpdateTask: Task<Void, Never>?
     private var hasDetectedAudioInCurrentSession = false
+    private var recordingFinishedSuccessfully = true
+    private var recordingFinishContinuation: CheckedContinuation<Bool, Never>?
     
     enum RecorderError: Error {
         case couldNotStartRecording
+        case recordingFailed
     }
     
     override init() {
@@ -40,7 +43,11 @@ class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
         
         if recorder != nil {
             let currentURL = recorder?.url
-            stopRecording()
+            do {
+                _ = try await stopRecording()
+            } catch {
+                logger.warning("⚠️ Error stopping recording during device change: \(error.localizedDescription)")
+            }
             
             if let url = currentURL {
                 do {
@@ -145,24 +152,59 @@ class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
             
         } catch {
             logger.error("Failed to create audio recorder: \(error.localizedDescription)")
-            stopRecording()
+            audioLevelCheckTask?.cancel()
+            audioMeterUpdateTask?.cancel()
+            recorder = nil
+            audioMeter = AudioMeter(averagePower: 0, peakPower: 0)
+            deviceManager.isRecordingActive = false
             throw RecorderError.couldNotStartRecording
         }
     }
     
-    func stopRecording() {
+    func stopRecording() async throws -> Bool {
         audioLevelCheckTask?.cancel()
         audioMeterUpdateTask?.cancel()
-        recorder?.stop()
-        recorder = nil
+        
+        guard let recorder = recorder else {
+            logger.warning("⚠️ Attempted to stop recording but no recorder exists")
+            deviceManager.isRecordingActive = false
+            return false
+        }
+        
+        let recordingURL = recorder.url
+        recordingFinishedSuccessfully = true
+        
+        let success = await withCheckedContinuation { continuation in
+            recordingFinishContinuation = continuation
+            recorder.stop()
+        }
+        
+        self.recorder = nil
         audioMeter = AudioMeter(averagePower: 0, peakPower: 0)
+        deviceManager.isRecordingActive = false
+        
+        if success && FileManager.default.fileExists(atPath: recordingURL.path) {
+            let attributes = try? FileManager.default.attributesOfItem(atPath: recordingURL.path)
+            let fileSize = attributes?[.size] as? UInt64 ?? 0
+            
+            if fileSize > 0 {
+                logger.info("✅ Recording stopped successfully, file size: \(fileSize) bytes")
+            } else {
+                logger.error("❌ Recording file exists but is empty")
+                throw RecorderError.recordingFailed
+            }
+        } else {
+            logger.error("❌ Recording file does not exist or recording failed")
+            throw RecorderError.recordingFailed
+        }
         
         Task {
             await mediaController.unmuteSystemAudio()
             try? await Task.sleep(nanoseconds: 100_000_000)
             await playbackController.resumeMedia()
         }
-        deviceManager.isRecordingActive = false
+        
+        return success
     }
 
     private func updateAudioMeter() {
@@ -205,14 +247,17 @@ class Recorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
     // MARK: - AVAudioRecorderDelegate
     
     nonisolated func audioRecorderDidFinishRecording(_ recorder: AVAudioRecorder, successfully flag: Bool) {
-        if !flag {
-            logger.error("❌ Recording finished unsuccessfully - file may be corrupted or empty")
-            Task { @MainActor in
+        Task { @MainActor in
+            if !flag {
+                logger.error("❌ Recording finished unsuccessfully - file may be corrupted or empty")
+                recordingFinishedSuccessfully = false
                 NotificationManager.shared.showNotification(
                     title: "Recording failed - audio file corrupted",
                     type: .error
                 )
             }
+            recordingFinishContinuation?.resume(returning: flag)
+            recordingFinishContinuation = nil
         }
     }
     

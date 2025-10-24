@@ -8,6 +8,14 @@ struct FileWatcherRowView: View {
     let onUpdateOutputFolder: (URL) -> Void
 
     @State private var isExpanded = false
+    
+    private var inputDisplayPath: String {
+        pair.inputFolderPath.isEmpty ? "Select folder..." : pair.inputFolderPath
+    }
+    
+    private var outputDisplayPath: String {
+        pair.outputFolderPath.isEmpty ? "Select folder..." : pair.outputFolderPath
+    }
 
     var body: some View {
         VStack(spacing: 12) {
@@ -29,9 +37,13 @@ struct FileWatcherRowView: View {
                         HStack {
                             Image(systemName: "folder")
                                 .foregroundColor(.blue)
-                            Text(pair.inputFolderURL.lastPathComponent.isEmpty ? "Select folder..." : pair.inputFolderURL.lastPathComponent)
+                            Text(inputDisplayPath)
+                                .font(.system(size: 12, design: .monospaced))
                                 .lineLimit(1)
-                                .foregroundColor(pair.inputFolderURL.lastPathComponent.isEmpty ? .secondary : .primary)
+                                .truncationMode(.middle)
+                                .foregroundColor(pair.inputFolderPath.isEmpty ? .secondary : .primary)
+                                .layoutPriority(1)
+                                .help(inputDisplayPath)
                             Spacer()
                             Image(systemName: "chevron.down")
                                 .font(.caption)
@@ -59,9 +71,13 @@ struct FileWatcherRowView: View {
                         HStack {
                             Image(systemName: "folder.badge.plus")
                                 .foregroundColor(.green)
-                            Text(pair.outputFolderURL.lastPathComponent.isEmpty ? "Select folder..." : pair.outputFolderURL.lastPathComponent)
+                            Text(outputDisplayPath)
+                                .font(.system(size: 12, design: .monospaced))
                                 .lineLimit(1)
-                                .foregroundColor(pair.outputFolderURL.lastPathComponent.isEmpty ? .secondary : .primary)
+                                .truncationMode(.middle)
+                                .foregroundColor(pair.outputFolderPath.isEmpty ? .secondary : .primary)
+                                .layoutPriority(1)
+                                .help(outputDisplayPath)
                             Spacer()
                             Image(systemName: "chevron.down")
                                 .font(.caption)

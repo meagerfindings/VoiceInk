@@ -150,6 +150,11 @@ class FileWatcherManager: ObservableObject {
 
             Task { @MainActor in
                 for fileURL in files {
+                    // Skip .meta.json files during scanning
+                    if fileURL.lastPathComponent.hasSuffix(".meta.json") {
+                        continue
+                    }
+                    
                     // Check if it's a supported audio/video file
                     guard SupportedMedia.isSupported(url: fileURL) else { continue }
 
@@ -237,6 +242,11 @@ class FileWatcherManager: ObservableObject {
         currentlyProcessingFile = fileURL
         logger.info("Processing file: \(fileURL.lastPathComponent)")
 
+        let metadata = readMetadataFile(audioURL: fileURL)
+        if metadata != nil {
+            logger.info("Found metadata sidecar for \(fileURL.lastPathComponent)")
+        }
+
         do {
             guard let currentModel = whisperState.currentTranscriptionModel else {
                 throw TranscriptionError.noModelSelected
@@ -264,15 +274,50 @@ class FileWatcherManager: ObservableObject {
                 finalText = WordReplacementService.shared.applyReplacements(to: finalText)
             }
 
-            let outputFileName = fileURL.deletingPathExtension().lastPathComponent + "_transcript.txt"
-            let outputURL = pair.outputFolderURL.appendingPathComponent(outputFileName)
-
-            if !FileManager.default.fileExists(atPath: pair.outputFolderPath) {
-                try FileManager.default.createDirectory(at: pair.outputFolderURL, withIntermediateDirectories: true)
-                logger.info("Created output directory: \(pair.outputFolderPath)")
+            let outputURL = determineOutputPath(metadata: metadata, pair: pair, filename: fileURL.lastPathComponent)
+            let outputDir = outputURL.deletingLastPathComponent()
+            
+            if !FileManager.default.fileExists(atPath: outputDir.path) {
+                try FileManager.default.createDirectory(at: outputDir, withIntermediateDirectories: true)
+                logger.info("Created output directory: \(outputDir.path)")
             }
 
-            try finalText.write(to: outputURL, atomically: true, encoding: .utf8)
+            let transcriptionOutput: TranscriptionOutput
+            if let metadata = metadata {
+                transcriptionOutput = TranscriptionOutput.forPodcast(
+                    transcription: finalText,
+                    podcastMetadata: metadata,
+                    audioFilePath: fileURL.lastPathComponent,
+                    confidenceScore: nil,
+                    language: nil
+                )
+            } else if let videoId = extractYouTubeVideoId(from: fileURL.lastPathComponent) {
+                transcriptionOutput = TranscriptionOutput.forYouTube(
+                    transcription: finalText,
+                    videoId: videoId,
+                    audioFilePath: fileURL.lastPathComponent,
+                    durationSeconds: Int(duration),
+                    confidenceScore: nil,
+                    language: nil,
+                    flowType: nil
+                )
+            } else {
+                let outputMetadata = TranscriptionOutput.TranscriptionMetadata(
+                    sourceType: "audio_transcription",
+                    flowType: nil,
+                    audioFilePath: fileURL.lastPathComponent,
+                    durationSeconds: Int(duration),
+                    confidenceScore: nil,
+                    language: nil
+                )
+                transcriptionOutput = TranscriptionOutput(
+                    text: finalText,
+                    title: nil,
+                    metadata: outputMetadata
+                )
+            }
+            
+            try transcriptionOutput.write(to: outputURL)
 
             let transcription = Transcription(
                 text: finalText,
@@ -286,14 +331,30 @@ class FileWatcherManager: ObservableObject {
 
             try? FileManager.default.removeItem(at: tempURL)
 
-            do {
-                try FileManager.default.removeItem(at: fileURL)
+            let metadataURL = fileURL.deletingPathExtension().appendingPathExtension("meta.json")
+            var filesToDelete = [fileURL]
+            if FileManager.default.fileExists(atPath: metadataURL.path) {
+                filesToDelete.append(metadataURL)
+            }
+
+            var allDeleted = true
+            for fileToDelete in filesToDelete {
+                do {
+                    try FileManager.default.removeItem(at: fileToDelete)
+                    logger.info("Deleted: \(fileToDelete.lastPathComponent)")
+                } catch {
+                    allDeleted = false
+                    cleanupFailedFiles.insert(fileToDelete)
+                    logger.error("Failed to delete \(fileToDelete.lastPathComponent): \(error.localizedDescription)")
+                }
+            }
+            
+            if allDeleted {
                 cleanupFailedFiles.remove(fileURL)
-                logger.info("Successfully processed and deleted file: \(fileURL.lastPathComponent) -> \(outputFileName)")
-            } catch {
-                cleanupFailedFiles.insert(fileURL)
-                logger.error("Failed to delete input file \(fileURL.lastPathComponent) after transcription: \(error.localizedDescription)")
-                logger.info("Successfully processed file: \(fileURL.lastPathComponent) -> \(outputFileName) (file cleanup failed)")
+                cleanupFailedFiles.remove(metadataURL)
+                logger.info("Successfully processed and deleted file: \(fileURL.lastPathComponent) -> \(outputURL.lastPathComponent)")
+            } else {
+                logger.info("Successfully processed file: \(fileURL.lastPathComponent) -> \(outputURL.lastPathComponent) (cleanup partially failed)")
             }
 
         } catch {
@@ -353,5 +414,56 @@ class FileWatcherManager: ObservableObject {
         } catch {
             logger.error("Failed to save watcher pairs: \(error.localizedDescription)")
         }
+    }
+    
+    private func readMetadataFile(audioURL: URL) -> PodcastMetadata? {
+        let metadataURL = audioURL.deletingPathExtension().appendingPathExtension("meta.json")
+        
+        guard FileManager.default.fileExists(atPath: metadataURL.path) else {
+            return nil
+        }
+        
+        do {
+            return try PodcastMetadata.load(from: metadataURL)
+        } catch {
+            logger.warning("Failed to parse metadata file \(metadataURL.lastPathComponent): \(error.localizedDescription)")
+            return nil
+        }
+    }
+    
+    private func determineOutputPath(metadata: PodcastMetadata?, pair: FileWatcherPair, filename: String) -> URL {
+        let baseOutputURL = pair.outputFolderURL
+        let basename = (filename as NSString).deletingPathExtension
+        let outputFilename = "\(basename).json"
+        
+        if let metadata = metadata {
+            let flowTypeDir = metadata.flowType.rawValue
+            let sourceTypeDir = "podcasts"
+            let subdirPath = "\(flowTypeDir)/\(sourceTypeDir)/01_raw"
+            
+            return baseOutputURL
+                .appendingPathComponent(subdirPath)
+                .appendingPathComponent(outputFilename)
+        } else if extractYouTubeVideoId(from: filename) != nil {
+            let flowTypeDir = "simple"
+            let sourceTypeDir = "adhoc"
+            let subdirPath = "\(flowTypeDir)/\(sourceTypeDir)/01_raw"
+            
+            return baseOutputURL
+                .appendingPathComponent(subdirPath)
+                .appendingPathComponent(outputFilename)
+        } else {
+            let flowTypeDir = "simple"
+            let sourceTypeDir = "adhoc"
+            let subdirPath = "\(flowTypeDir)/\(sourceTypeDir)/01_raw"
+            
+            return baseOutputURL
+                .appendingPathComponent(subdirPath)
+                .appendingPathComponent(outputFilename)
+        }
+    }
+    
+    private func extractYouTubeVideoId(from filename: String) -> String? {
+        return TranscriptionOutput.extractYouTubeVideoId(from: filename)
     }
 }

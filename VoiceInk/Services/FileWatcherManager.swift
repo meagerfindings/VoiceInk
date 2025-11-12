@@ -371,7 +371,7 @@ class FileWatcherManager: ObservableObject {
             let localService = LocalTranscriptionService(modelsDirectory: whisperState.modelsDirectory, whisperState: whisperState)
             return try await localService.transcribe(audioURL: tempURL, model: model)
         case .parakeet:
-            let parakeetService = ParakeetTranscriptionService(customModelsDirectory: whisperState.parakeetModelsDirectory)
+            let parakeetService = ParakeetTranscriptionService()
             return try await parakeetService.transcribe(audioURL: tempURL, model: model)
         case .nativeApple:
             let nativeService = NativeAppleTranscriptionService()

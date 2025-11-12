@@ -49,15 +49,33 @@ class MiniRecorderShortcutManager: ObservableObject {
         setupEnhancementShortcut()
         setupEscapeHandlerOnce()
         setupCancelHandlerOnce()
+
+        NotificationCenter.default.addObserver(self, selector: #selector(settingsDidChange), name: .AppSettingsDidChange, object: nil)
     }
     
+    @objc private func settingsDidChange() {
+        Task {
+            if await whisperState.isMiniRecorderVisible {
+                if EnhancementShortcutSettings.shared.isToggleEnhancementShortcutEnabled {
+                    KeyboardShortcuts.setShortcut(.init(.e, modifiers: .command), for: .toggleEnhancement)
+                } else {
+                    removeEnhancementShortcut()
+                }
+            }
+        }
+    }
+
     private func setupVisibilityObserver() {
         visibilityTask = Task { @MainActor in
             for await isVisible in whisperState.$isMiniRecorderVisible.values {
                 if isVisible {
                     activateEscapeShortcut()
                     activateCancelShortcut()
-                    KeyboardShortcuts.setShortcut(.init(.e, modifiers: .command), for: .toggleEnhancement)
+                    if EnhancementShortcutSettings.shared.isToggleEnhancementShortcutEnabled {
+                        KeyboardShortcuts.setShortcut(.init(.e, modifiers: .command), for: .toggleEnhancement)
+                    } else {
+                        removeEnhancementShortcut()
+                    }
                     setupPromptShortcuts()
                     setupPowerModeShortcuts()
                 } else {
@@ -88,8 +106,7 @@ class MiniRecorderShortcutManager: ObservableObject {
                 if let firstTime = self.escFirstPressTime,
                    now.timeIntervalSince(firstTime) <= self.escSecondPressThreshold {
                     self.escFirstPressTime = nil
-                    SoundManager.shared.playEscSound()
-                    await self.whisperState.dismissMiniRecorder()
+                    await self.whisperState.cancelRecording()
                 } else {
                     self.escFirstPressTime = now
                     SoundManager.shared.playEscSound()
@@ -125,9 +142,8 @@ class MiniRecorderShortcutManager: ObservableObject {
                 guard let self = self,
                       await self.whisperState.isMiniRecorderVisible,
                       KeyboardShortcuts.getShortcut(for: .cancelRecorder) != nil else { return }
-                
-                SoundManager.shared.playEscSound()
-                await self.whisperState.dismissMiniRecorder()
+
+                await self.whisperState.cancelRecording()
             }
         }
     }
@@ -280,6 +296,7 @@ class MiniRecorderShortcutManager: ObservableObject {
     
     deinit {
         visibilityTask?.cancel()
+        NotificationCenter.default.removeObserver(self)
         Task { @MainActor in
             deactivateEscapeShortcut()
             deactivateCancelShortcut()

@@ -19,7 +19,7 @@ class AudioTranscriptionService: ObservableObject {
     private let localTranscriptionService: LocalTranscriptionService
     private lazy var cloudTranscriptionService = CloudTranscriptionService()
     private lazy var nativeAppleTranscriptionService = NativeAppleTranscriptionService()
-    private lazy var parakeetTranscriptionService = ParakeetTranscriptionService(customModelsDirectory: whisperState.parakeetModelsDirectory)
+    private lazy var parakeetTranscriptionService = ParakeetTranscriptionService()
     
     enum TranscriptionError: Error {
         case noAudioFile
@@ -73,11 +73,8 @@ class AudioTranscriptionService: ObservableObject {
                 text = WhisperTextFormatter.format(text)
             }
 
-            // Apply word replacements if enabled
-            if UserDefaults.standard.bool(forKey: "IsWordReplacementEnabled") {
-                text = WordReplacementService.shared.applyReplacements(to: text)
-                logger.notice("✅ Word replacements applied")
-            }
+            text = WordReplacementService.shared.applyReplacements(to: text)
+            logger.notice("✅ Word replacements applied")
             
             // Get audio duration
             let audioAsset = AVURLAsset(url: url)
@@ -106,7 +103,7 @@ class AudioTranscriptionService: ObservableObject {
             var promptDetectionResult: PromptDetectionService.PromptDetectionResult? = nil
 
             if let enhancementService = enhancementService, enhancementService.isConfigured {
-                let detectionResult = promptDetectionService.analyzeText(text, with: enhancementService)
+                let detectionResult = await promptDetectionService.analyzeText(text, with: enhancementService)
                 promptDetectionResult = detectionResult
                 await promptDetectionService.applyDetectionResult(detectionResult, to: enhancementService)
             }

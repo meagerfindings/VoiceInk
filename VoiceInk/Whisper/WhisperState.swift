@@ -31,6 +31,19 @@ class WhisperState: NSObject, ObservableObject {
 
     @Published var recorderType: String = UserDefaults.standard.string(forKey: "RecorderType") ?? "mini" {
         didSet {
+            if isMiniRecorderVisible {
+                if oldValue == "notch" {
+                    notchWindowManager?.hide()
+                    notchWindowManager = nil
+                } else {
+                    miniWindowManager?.hide()
+                    miniWindowManager = nil
+                }
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 50_000_000)
+                    showRecorderPanel()
+                }
+            }
             UserDefaults.standard.set(recorderType, forKey: "RecorderType")
         }
     }
@@ -59,7 +72,7 @@ class WhisperState: NSObject, ObservableObject {
     private var localTranscriptionService: LocalTranscriptionService!
     private lazy var cloudTranscriptionService = CloudTranscriptionService()
     private lazy var nativeAppleTranscriptionService = NativeAppleTranscriptionService()
-    private lazy var parakeetTranscriptionService = ParakeetTranscriptionService(customModelsDirectory: parakeetModelsDirectory)
+    internal lazy var parakeetTranscriptionService = ParakeetTranscriptionService()
     
     private var modelUrl: URL? {
         let possibleURLs = [
@@ -82,7 +95,6 @@ class WhisperState: NSObject, ObservableObject {
     
     let modelsDirectory: URL
     let recordingsDirectory: URL
-    let parakeetModelsDirectory: URL
     let enhancementService: AIEnhancementService?
     var licenseViewModel: LicenseViewModel
     let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "WhisperState")
@@ -91,7 +103,7 @@ class WhisperState: NSObject, ObservableObject {
     
     // For model progress tracking
     @Published var downloadProgress: [String: Double] = [:]
-    @Published var isDownloadingParakeet = false
+    @Published var parakeetDownloadStates: [String: Bool] = [:]
     
     init(modelContext: ModelContext, enhancementService: AIEnhancementService? = nil) {
         self.modelContext = modelContext
@@ -100,7 +112,6 @@ class WhisperState: NSObject, ObservableObject {
         
         self.modelsDirectory = appSupportDirectory.appendingPathComponent("WhisperModels")
         self.recordingsDirectory = appSupportDirectory.appendingPathComponent("Recordings")
-        self.parakeetModelsDirectory = appSupportDirectory.appendingPathComponent("ParakeetModels")
         
         self.enhancementService = enhancementService
         self.licenseViewModel = LicenseViewModel()
@@ -226,12 +237,12 @@ class WhisperState: NSObject, ObservableObject {
                                         self.logger.error("❌ Model loading failed: \(error.localizedDescription)")
                                     }
                                 }
-                                    } else if let model = self.currentTranscriptionModel, model.provider == .parakeet {
-            try? await parakeetTranscriptionService.loadModel()
+                            } else if let parakeetModel = self.currentTranscriptionModel as? ParakeetModel {
+                                try? await self.parakeetTranscriptionService.loadModel(for: parakeetModel)
                             }
         
-                            if let enhancementService = self.enhancementService,
-                               enhancementService.useScreenCaptureContext {
+                            if let enhancementService = self.enhancementService {
+                                enhancementService.captureClipboardContext()
                                 await enhancementService.captureScreenContext()
                             }
         
@@ -321,7 +332,9 @@ class WhisperState: NSObject, ObservableObject {
 
             let transcriptionStart = Date()
             var text = try await transcriptionService.transcribe(audioURL: url, model: model)
+            logger.notice("📝 Raw transcript: \(text, privacy: .public)")
             text = TranscriptionOutputFilter.filter(text)
+            logger.notice("📝 Output filter result: \(text, privacy: .public)")
             let transcriptionDuration = Date().timeIntervalSince(transcriptionStart)
 
             let powerModeManager = PowerModeManager.shared
@@ -335,11 +348,11 @@ class WhisperState: NSObject, ObservableObject {
 
             if UserDefaults.standard.object(forKey: "IsTextFormattingEnabled") as? Bool ?? true {
                 text = WhisperTextFormatter.format(text)
+                logger.notice("📝 Formatted transcript: \(text, privacy: .public)")
             }
 
-            if UserDefaults.standard.bool(forKey: "IsWordReplacementEnabled") {
-                text = WordReplacementService.shared.applyReplacements(to: text)
-            }
+            text = WordReplacementService.shared.applyReplacements(to: text)
+            logger.notice("📝 WordReplacement: \(text, privacy: .public)")
 
             let audioAsset = AVURLAsset(url: url)
             let actualDuration = (try? CMTimeGetSeconds(await audioAsset.load(.duration))) ?? 0.0
@@ -353,7 +366,7 @@ class WhisperState: NSObject, ObservableObject {
             finalPastedText = text
             
             if let enhancementService = enhancementService, enhancementService.isConfigured {
-                let detectionResult = promptDetectionService.analyzeText(text, with: enhancementService)
+                let detectionResult = await promptDetectionService.analyzeText(text, with: enhancementService)
                 promptDetectionResult = detectionResult
                 await promptDetectionService.applyDetectionResult(detectionResult, to: enhancementService)
             }
@@ -368,6 +381,7 @@ class WhisperState: NSObject, ObservableObject {
                 
                 do {
                     let (enhancedText, enhancementDuration, promptName) = try await enhancementService.enhance(textForAI)
+                    logger.notice("📝 AI enhancement: \(enhancedText, privacy: .public)")
                     transcription.enhancedText = enhancedText
                     transcription.aiEnhancementModelName = enhancementService.getAIService()?.currentModel
                     transcription.promptName = promptName
@@ -377,12 +391,8 @@ class WhisperState: NSObject, ObservableObject {
                     finalPastedText = enhancedText
                 } catch {
                     transcription.enhancedText = "Enhancement failed: \(error)"
-                    await MainActor.run {
-                        NotificationManager.shared.showNotification(
-                            title: "AI enhancement failed",
-                            type: .error
-                        )
-                    }
+                  
+                    if await checkCancellationAndCleanup() { return }
                 }
             }
 
@@ -399,8 +409,13 @@ class WhisperState: NSObject, ObservableObject {
 
         // --- Finalize and save ---
         try? modelContext.save()
-        NotificationCenter.default.post(name: .transcriptionCreated, object: transcription)
         
+        if transcription.transcriptionStatus == TranscriptionStatus.completed.rawValue {
+            NotificationCenter.default.post(name: .transcriptionCompleted, object: transcription)
+        }
+
+        if await checkCancellationAndCleanup() { return }
+
         if var textToPaste = finalPastedText, transcription.transcriptionStatus == TranscriptionStatus.completed.rawValue {
             if case .trialExpired = licenseViewModel.licenseState {
                 textToPaste = """
@@ -408,14 +423,12 @@ class WhisperState: NSObject, ObservableObject {
                     \n\(textToPaste)
                     """
             }
-            
+
             let shouldAddSpace = UserDefaults.standard.object(forKey: "AppendTrailingSpace") as? Bool ?? true
             if shouldAddSpace {
                 textToPaste += " "
             }
-            
-            if await checkCancellationAndCleanup() { return }
-            
+
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
                 CursorPaster.pasteAtCursor(textToPaste)
 
@@ -428,14 +441,16 @@ class WhisperState: NSObject, ObservableObject {
                 }
             }
         }
-        
+
         if let result = promptDetectionResult,
            let enhancementService = enhancementService,
            result.shouldEnableAI {
             await promptDetectionService.restoreOriginalSettings(result, to: enhancementService)
         }
-        
+
         await self.dismissMiniRecorder()
+
+        shouldCancelRecording = false
     }
 
     func getEnhancementService() -> AIEnhancementService? {
@@ -444,14 +459,13 @@ class WhisperState: NSObject, ObservableObject {
     
     private func checkCancellationAndCleanup() async -> Bool {
         if shouldCancelRecording {
-            await dismissMiniRecorder()
+            await cleanupModelResources()
             return true
         }
         return false
     }
-    
+
     private func cleanupAndDismiss() async {
         await dismissMiniRecorder()
     }
 }
-

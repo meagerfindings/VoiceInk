@@ -53,7 +53,7 @@ struct MenuBarView: View {
                         enhancementService.setActivePrompt(prompt)
                     } label: {
                         HStack {
-                            Image(systemName: prompt.icon.rawValue)
+                            Image(systemName: prompt.icon)
                                 .foregroundColor(.accentColor)
                             Text(prompt.title)
                             if enhancementService.selectedPromptId == prompt.id {
@@ -180,18 +180,22 @@ struct MenuBarView: View {
             Button("Copy Last Transcription") {
                 LastTranscriptionService.copyLastTranscription(from: whisperState.modelContext)
             }
+            .keyboardShortcut("c", modifiers: [.command, .shift])
             
             Button("History") {
                 menuBarManager.openMainWindowAndNavigate(to: "History")
             }
+            .keyboardShortcut("h", modifiers: [.command, .shift])
             
             Button("Settings") {
                 menuBarManager.openMainWindowAndNavigate(to: "Settings")
             }
+            .keyboardShortcut(",", modifiers: .command)
             
             Button(menuBarManager.isMenuBarOnly ? "Show Dock Icon" : "Hide Dock Icon") {
                 menuBarManager.toggleMenuBarOnly()
             }
+            .keyboardShortcut("d", modifiers: [.command, .shift])
             
             Toggle("Launch at Login", isOn: $launchAtLoginEnabled)
                 .onChange(of: launchAtLoginEnabled) { oldValue, newValue in

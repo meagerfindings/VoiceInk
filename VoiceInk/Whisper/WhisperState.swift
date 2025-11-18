@@ -265,7 +265,7 @@ class WhisperState: NSObject, ObservableObject {
         response(true)
     }
     
-    private func transcribeAudio(on transcription: Transcription) async {
+    nonisolated private func transcribeAudio(on transcription: Transcription) async {
         guard let urlString = transcription.audioFileURL, let url = URL(string: urlString) else {
             logger.error("❌ Invalid audio file URL in transcription object.")
             await MainActor.run {
@@ -277,7 +277,7 @@ class WhisperState: NSObject, ObservableObject {
             return
         }
 
-        if shouldCancelRecording {
+        if await MainActor.run(resultType: Bool.self) { shouldCancelRecording } {
             await MainActor.run {
                 recordingState = .idle
             }
@@ -290,44 +290,40 @@ class WhisperState: NSObject, ObservableObject {
         }
 
         // Play stop sound when transcription starts with a small delay
-        Task {
+        Task { @MainActor in
             let isSystemMuteEnabled = UserDefaults.standard.bool(forKey: "isSystemMuteEnabled")
             if isSystemMuteEnabled {
                 try? await Task.sleep(nanoseconds: 200_000_000) // 200 milliseconds delay
             }
-            await MainActor.run {
-                SoundManager.shared.playStopSound()
-            }
-        }
-
-        defer {
-            if shouldCancelRecording {
-                Task {
-                    await cleanupModelResources()
-                }
-            }
+            SoundManager.shared.playStopSound()
         }
 
         logger.notice("🔄 Starting transcription...")
-        
+
         var finalPastedText: String?
         var promptDetectionResult: PromptDetectionService.PromptDetectionResult?
 
         do {
-            guard let model = currentTranscriptionModel else {
+            // Capture model and services from main actor
+            let (model, localService, parakeetService, nativeAppleService, cloudService, enhanceService) = await MainActor.run {
+                (currentTranscriptionModel, localTranscriptionService, parakeetTranscriptionService,
+                 nativeAppleTranscriptionService, cloudTranscriptionService, enhancementService)
+            }
+
+            guard let model = model else {
                 throw WhisperStateError.transcriptionFailed
             }
 
-            let transcriptionService: TranscriptionService
+            let transcriptionService: any TranscriptionService
             switch model.provider {
             case .local:
-                transcriptionService = localTranscriptionService
+                transcriptionService = localService!
             case .parakeet:
-                transcriptionService = parakeetTranscriptionService
+                transcriptionService = parakeetService
             case .nativeApple:
-                transcriptionService = nativeAppleTranscriptionService
+                transcriptionService = nativeAppleService
             default:
-                transcriptionService = cloudTranscriptionService
+                transcriptionService = cloudService
             }
 
             let transcriptionStart = Date()
@@ -364,35 +360,43 @@ class WhisperState: NSObject, ObservableObject {
             transcription.powerModeName = powerModeName
             transcription.powerModeEmoji = powerModeEmoji
             finalPastedText = text
-            
-            if let enhancementService = enhancementService, enhancementService.isConfigured {
-                let detectionResult = await promptDetectionService.analyzeText(text, with: enhancementService)
+
+            if let enhanceService = enhanceService, await enhanceService.isConfigured {
+                let detectionResult = await promptDetectionService.analyzeText(text, with: enhanceService)
                 promptDetectionResult = detectionResult
-                await promptDetectionService.applyDetectionResult(detectionResult, to: enhancementService)
+                await promptDetectionService.applyDetectionResult(detectionResult, to: enhanceService)
             }
 
-            if let enhancementService = enhancementService,
-               enhancementService.isEnhancementEnabled,
-               enhancementService.isConfigured {
-                if await checkCancellationAndCleanup() { return }
+            if let enhanceService = enhanceService,
+               await enhanceService.isEnhancementEnabled,
+               await enhanceService.isConfigured {
+                let shouldCancel = await MainActor.run(resultType: Bool.self) { shouldCancelRecording }
+                if shouldCancel {
+                    await cleanupModelResources()
+                    return
+                }
 
                 await MainActor.run { self.recordingState = .enhancing }
                 let textForAI = promptDetectionResult?.processedText ?? text
-                
+
                 do {
-                    let (enhancedText, enhancementDuration, promptName) = try await enhancementService.enhance(textForAI)
+                    let (enhancedText, enhancementDuration, promptName) = try await enhanceService.enhance(textForAI)
                     logger.notice("📝 AI enhancement: \(enhancedText, privacy: .public)")
                     transcription.enhancedText = enhancedText
-                    transcription.aiEnhancementModelName = enhancementService.getAIService()?.currentModel
+                    transcription.aiEnhancementModelName = await enhanceService.getAIService()?.currentModel
                     transcription.promptName = promptName
                     transcription.enhancementDuration = enhancementDuration
-                    transcription.aiRequestSystemMessage = enhancementService.lastSystemMessageSent
-                    transcription.aiRequestUserMessage = enhancementService.lastUserMessageSent
+                    transcription.aiRequestSystemMessage = await enhanceService.lastSystemMessageSent
+                    transcription.aiRequestUserMessage = await enhanceService.lastUserMessageSent
                     finalPastedText = enhancedText
                 } catch {
                     transcription.enhancedText = "Enhancement failed: \(error)"
-                  
-                    if await checkCancellationAndCleanup() { return }
+
+                    let shouldCancel = await MainActor.run(resultType: Bool.self) { shouldCancelRecording }
+                    if shouldCancel {
+                        await cleanupModelResources()
+                        return
+                    }
                 }
             }
 
@@ -408,16 +412,23 @@ class WhisperState: NSObject, ObservableObject {
         }
 
         // --- Finalize and save ---
-        try? modelContext.save()
-        
+        await MainActor.run {
+            try? modelContext.save()
+        }
+
         if transcription.transcriptionStatus == TranscriptionStatus.completed.rawValue {
             NotificationCenter.default.post(name: .transcriptionCompleted, object: transcription)
         }
 
-        if await checkCancellationAndCleanup() { return }
+        let shouldCancel = await MainActor.run(resultType: Bool.self) { shouldCancelRecording }
+        if shouldCancel {
+            await cleanupModelResources()
+            return
+        }
 
         if var textToPaste = finalPastedText, transcription.transcriptionStatus == TranscriptionStatus.completed.rawValue {
-            if case .trialExpired = licenseViewModel.licenseState {
+            let licenseState = await MainActor.run { licenseViewModel.licenseState }
+            if case .trialExpired = licenseState {
                 textToPaste = """
                     Your trial has expired. Upgrade to VoiceInk Pro at tryvoiceink.com/buy
                     \n\(textToPaste)
@@ -442,15 +453,18 @@ class WhisperState: NSObject, ObservableObject {
             }
         }
 
-        if let result = promptDetectionResult,
-           let enhancementService = enhancementService,
-           result.shouldEnableAI {
-            await promptDetectionService.restoreOriginalSettings(result, to: enhancementService)
+        if let result = promptDetectionResult {
+            let enhanceService = await MainActor.run { enhancementService }
+            if let enhanceService = enhanceService, result.shouldEnableAI {
+                await promptDetectionService.restoreOriginalSettings(result, to: enhanceService)
+            }
         }
 
         await self.dismissMiniRecorder()
 
-        shouldCancelRecording = false
+        await MainActor.run {
+            shouldCancelRecording = false
+        }
     }
 
     func getEnhancementService() -> AIEnhancementService? {

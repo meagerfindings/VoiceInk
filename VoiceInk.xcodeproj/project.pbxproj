@@ -685,8 +685,8 @@
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/tisfeng/SelectedTextKit";
 			requirement = {
-				kind = revision;
-				revision = f6c1574ad6f747e1110b544c35e6ec64ed6f52f1;
+				branch = main;
+				kind = branch;
 			};
 		};
 		E1D7EF972E35E16C00640029 /* XCRemoteSwiftPackageReference "mediaremote-adapter" */ = {

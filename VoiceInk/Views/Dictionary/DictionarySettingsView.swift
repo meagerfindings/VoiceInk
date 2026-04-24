@@ -1,17 +1,20 @@
 import SwiftUI
+import SwiftData
 
 struct DictionarySettingsView: View {
+    @Environment(\.modelContext) private var modelContext
     @State private var selectedSection: DictionarySection = .replacements
+    @State private var isShowingSettings = false
     let whisperPrompt: WhisperPrompt
     
     enum DictionarySection: String, CaseIterable {
         case replacements = "Word Replacements"
-        case spellings = "Correct Spellings"
+        case spellings = "Vocabulary"
         
         var description: String {
             switch self {
             case .spellings:
-                return "Train VoiceInk to recognize industry terms, names, and technical words"
+                return "Add words to help VoiceInk recognize them properly"
             case .replacements:
                 return "Automatically replace specific words/phrases with custom formatted text "
             }
@@ -36,36 +39,27 @@ struct DictionarySettingsView: View {
         }
         .frame(minWidth: 600, minHeight: 500)
         .background(Color(NSColor.controlBackgroundColor))
+        .slidingPanel(isPresented: $isShowingSettings, width: 400) {
+            DictionarySettingsPanel {
+                withAnimation(.smooth(duration: 0.3)) {
+                    isShowingSettings = false
+                }
+            }
+        }
     }
     
     private var heroSection: some View {
-        VStack(spacing: 24) {
-            Image(systemName: "brain.filled.head.profile")
-                .font(.system(size: 40))
-                .foregroundStyle(.blue)
-                .padding(20)
-                .background(Circle()
-                    .fill(Color(.windowBackgroundColor).opacity(0.9))
-                    .shadow(color: .black.opacity(0.1), radius: 10, y: 5))
-            
-            VStack(spacing: 8) {
-                Text("Dictionary Settings")
-                    .font(.system(size: 28, weight: .bold))
-                Text("Enhance VoiceInk's transcription accuracy by teaching it your vocabulary")
-                    .font(.system(size: 15))
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: 400)
-            }
-        }
-        .padding(.vertical, 40)
-        .frame(maxWidth: .infinity)
+        CompactHeroSection(
+            icon: "brain.filled.head.profile",
+            title: "Dictionary Settings",
+            description: "Enhance VoiceInk's transcription accuracy by teaching it your vocabulary",
+            maxDescriptionWidth: 500
+        )
     }
     
     private var mainContent: some View {
         VStack(spacing: 40) {
             sectionSelector
-            
             selectedSectionContent
         }
         .padding(.horizontal, 32)
@@ -74,10 +68,26 @@ struct DictionarySettingsView: View {
     
     private var sectionSelector: some View {
         VStack(alignment: .leading, spacing: 20) {
-            Text("Select Section")
-                .font(.title2)
-                .fontWeight(.semibold)
-            
+            HStack {
+                Text("Select Section")
+                    .font(.title2)
+                    .fontWeight(.semibold)
+
+                Spacer()
+
+                Button {
+                    withAnimation(.smooth(duration: 0.3)) {
+                        isShowingSettings.toggle()
+                    }
+                } label: {
+                    Image(systemName: "gear")
+                        .font(.system(size: 18, weight: .medium))
+                        .foregroundColor(isShowingSettings ? .accentColor : .secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Dictionary settings")
+            }
+
             HStack(spacing: 20) {
                 ForEach(DictionarySection.allCases, id: \.self) { section in
                     SectionCard(
@@ -94,7 +104,7 @@ struct DictionarySettingsView: View {
         VStack(alignment: .leading, spacing: 20) {
             switch selectedSection {
             case .spellings:
-                DictionaryView(whisperPrompt: whisperPrompt)
+                VocabularyView(whisperPrompt: whisperPrompt)
                     .background(CardBackground(isSelected: false))
             case .replacements:
                 WordReplacementView()

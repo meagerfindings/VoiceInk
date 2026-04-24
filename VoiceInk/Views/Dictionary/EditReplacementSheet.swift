@@ -1,32 +1,38 @@
 import SwiftUI
+import SwiftData
 
-/// A reusable sheet for editing an existing word replacement entry.
-/// Mirrors the UI of `AddReplacementSheet` for consistency while pre-populating
-/// the fields with the existing values.
+// Edit existing word replacement entry
 struct EditReplacementSheet: View {
-    @ObservedObject var manager: WordReplacementManager
-    let originalKey: String
+    let replacement: WordReplacement
+    let modelContext: ModelContext
 
     @Environment(\.dismiss) private var dismiss
 
     @State private var originalWord: String
     @State private var replacementWord: String
+    @State private var showAlert = false
+    @State private var alertMessage = ""
 
     // MARK: – Initialiser
-    init(manager: WordReplacementManager, originalKey: String) {
-        self.manager = manager
-        self.originalKey = originalKey
-        _originalWord = State(initialValue: originalKey)
-        _replacementWord = State(initialValue: manager.replacements[originalKey] ?? "")
+    init(replacement: WordReplacement, modelContext: ModelContext) {
+        self.replacement = replacement
+        self.modelContext = modelContext
+        _originalWord = State(initialValue: replacement.originalText)
+        _replacementWord = State(initialValue: replacement.replacementText)
     }
 
     var body: some View {
         VStack(spacing: 0) {
             header
-            Divider()
+                .overlay(Divider().opacity(0.5), alignment: .bottom)
             formContent
         }
-        .frame(width: 460, height: 480)
+        .frame(width: 460, height: 560)
+        .alert("Word Replacement", isPresented: $showAlert) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(alertMessage)
+        }
     }
 
     // MARK: – Subviews
@@ -65,7 +71,7 @@ struct EditReplacementSheet: View {
     }
 
     private var descriptionSection: some View {
-        Text("Update the word or phrase that should be automatically replaced during AI enhancement.")
+        Text("Update the word or phrase that should be automatically replaced.")
             .font(.subheadline)
             .foregroundColor(.secondary)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -84,8 +90,9 @@ struct EditReplacementSheet: View {
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
-                TextField("Enter word or phrase to replace", text: $originalWord)
+                TextField("Enter word or phrase to replace (use commas for multiple)", text: $originalWord)
                     .textFieldStyle(.roundedBorder)
+                
             }
             .padding(.horizontal)
 
@@ -116,19 +123,49 @@ struct EditReplacementSheet: View {
     // MARK: – Actions
     private func saveChanges() {
         let newOriginal = originalWord.trimmingCharacters(in: .whitespacesAndNewlines)
-        let newReplacement = replacementWord.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !newOriginal.isEmpty, !newReplacement.isEmpty else { return }
+        let newReplacement = replacementWord
+        let tokens = newOriginal
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard !tokens.isEmpty, !newReplacement.isEmpty else { return }
 
-        manager.updateReplacement(oldOriginal: originalKey, newOriginal: newOriginal, newReplacement: newReplacement)
-        dismiss()
+        // Check for duplicates (excluding current replacement)
+        let newTokensPairs = tokens.map { (original: $0, lowercased: $0.lowercased()) }
+
+        let descriptor = FetchDescriptor<WordReplacement>()
+        if let allReplacements = try? modelContext.fetch(descriptor) {
+            for existingReplacement in allReplacements {
+                // Skip checking against itself
+                if existingReplacement.id == replacement.id {
+                    continue
+                }
+
+                let existingTokens = existingReplacement.originalText
+                    .split(separator: ",")
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+                    .filter { !$0.isEmpty }
+
+                for tokenPair in newTokensPairs {
+                    if existingTokens.contains(tokenPair.lowercased) {
+                        alertMessage = "'\(tokenPair.original)' already exists in word replacements"
+                        showAlert = true
+                        return
+                    }
+                }
+            }
+        }
+
+        // Update the replacement
+        replacement.originalText = newOriginal
+        replacement.replacementText = newReplacement
+
+        do {
+            try modelContext.save()
+            dismiss()
+        } catch {
+            alertMessage = "Failed to save changes: \(error.localizedDescription)"
+            showAlert = true
+        }
     }
 }
-
-// MARK: – Preview
-#if DEBUG
-struct EditReplacementSheet_Previews: PreviewProvider {
-    static var previews: some View {
-        EditReplacementSheet(manager: WordReplacementManager(), originalKey: "hello")
-    }
-}
-#endif

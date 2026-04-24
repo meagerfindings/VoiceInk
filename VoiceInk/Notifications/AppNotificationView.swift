@@ -6,6 +6,7 @@ struct AppNotificationView: View {
     let duration: TimeInterval
     let onClose: () -> Void
     let onTap: (() -> Void)?
+    var actionButton: (label: String, action: () -> Void)? = nil
     
     @State private var progress: Double = 1.0
     @State private var timer: Timer?
@@ -53,7 +54,23 @@ struct AppNotificationView: View {
                     .multilineTextAlignment(.leading)
                 
                 Spacer()
-                
+
+                if let actionButton {
+                    Button(action: {
+                        actionButton.action()
+                        onClose()
+                    }) {
+                        Text(actionButton.label)
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(type.iconColor)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(type.iconColor.opacity(0.15))
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                }
+
                 Button(action: onClose) {
                     Image(systemName: "xmark")
                         .font(.system(size: 10, weight: .medium))
@@ -65,7 +82,7 @@ struct AppNotificationView: View {
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
         }
-        .frame(minWidth: 280, maxWidth: 380, minHeight: 44)
+        .frame(minWidth: 220, maxWidth: 750, minHeight: 44)
         .background(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .fill(.clear)

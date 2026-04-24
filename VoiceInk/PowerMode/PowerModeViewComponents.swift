@@ -63,21 +63,28 @@ struct PowerModeConfigurationsGrid: View {
                     powerModeManager: powerModeManager,
                     onEditConfig: onEditConfig
                 )
-                .contextMenu {
-                    Button(action: { 
-                        onEditConfig(config)
-                    }) {
-                        Label("Edit", systemImage: "pencil")
-                    }
-                    Button(role: .destructive, action: {
-                        powerModeManager.removeConfiguration(with: config.id)
-                    }) {
-                        Label("Remove", systemImage: "trash")
-                    }
-                }
             }
         }
-        .padding(.horizontal)
+    }
+}
+
+/// Small, consistent icon-only add button used across Power Mode configuration rows.
+struct AddIconButton: View {
+    let helpText: String
+    var isDisabled: Bool = false
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "plus.circle.fill")
+                .font(.system(size: 18))
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(.secondary)
+        }
+        .buttonStyle(.plain)
+        .help(helpText)
+        .accessibilityLabel(helpText)
+        .disabled(isDisabled)
     }
 }
 
@@ -87,7 +94,8 @@ struct ConfigurationRow: View {
     let powerModeManager: PowerModeManager
     let onEditConfig: (PowerModeConfig) -> Void
     @EnvironmentObject var enhancementService: AIEnhancementService
-    @EnvironmentObject var whisperState: WhisperState
+    @EnvironmentObject var transcriptionModelManager: TranscriptionModelManager
+    @State private var isHovering = false
     
     private let maxAppIconsToShow = 5
     
@@ -99,7 +107,7 @@ struct ConfigurationRow: View {
     
     private var selectedModel: String? {
         if let modelName = config.selectedTranscriptionModelName,
-           let model = whisperState.allAvailableModels.first(where: { $0.name == modelName }) {
+           let model = transcriptionModelManager.allAvailableModels.first(where: { $0.name == modelName }) {
             return model.displayName
         }
         return "Default"
@@ -111,7 +119,7 @@ struct ConfigurationRow: View {
             if langCode == "en" { return "English" }
             
             if let modelName = config.selectedTranscriptionModelName,
-               let model = whisperState.allAvailableModels.first(where: { $0.name == modelName }),
+               let model = transcriptionModelManager.allAvailableModels.first(where: { $0.name == modelName }),
                let langName = model.supportedLanguages[langCode] {
                 return langName
             }
@@ -157,6 +165,15 @@ struct ConfigurationRow: View {
                     HStack(spacing: 6) {
                         Text(config.name)
                             .font(.system(size: 15, weight: .semibold))
+                        
+                        if config.isDefault {
+                            Text("Default")
+                                .font(.system(size: 11, weight: .medium))
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(Capsule().fill(Color.accentColor))
+                                .foregroundColor(.white)
+                        }
                     }
                     
                     HStack(spacing: 12) {
@@ -168,7 +185,7 @@ struct ConfigurationRow: View {
                                     .font(.caption2)
                             }
                         }
-                        
+
                         if websiteCount > 0 {
                             HStack(spacing: 4) {
                                 Image(systemName: "globe")
@@ -178,6 +195,7 @@ struct ConfigurationRow: View {
                             }
                         }
                     }
+                    .padding(.top, 2)
                     .foregroundColor(.secondary)
                 }
                 
@@ -193,9 +211,8 @@ struct ConfigurationRow: View {
             .padding(.vertical, 12)
             .padding(.horizontal, 14)
             
-            if selectedModel != nil || selectedLanguage != nil || config.isAIEnhancementEnabled {
+            if selectedModel != nil || selectedLanguage != nil || config.isAIEnhancementEnabled || config.autoSendKey.isEnabled {
                 Divider()
-                    .padding(.horizontal, 16)
                 
                 HStack(spacing: 8) {
                     if let model = selectedModel, model != "Default" {
@@ -205,8 +222,8 @@ struct ConfigurationRow: View {
                             Text(model)
                                 .font(.caption)
                         }
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
                         .background(Capsule()
                             .fill(Color(NSColor.controlBackgroundColor)))
                         .overlay(
@@ -222,8 +239,8 @@ struct ConfigurationRow: View {
                             Text(language)
                                 .font(.caption)
                         }
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
                         .background(Capsule()
                             .fill(Color(NSColor.controlBackgroundColor)))
                         .overlay(
@@ -239,8 +256,8 @@ struct ConfigurationRow: View {
                             Text(modelName.count > 20 ? String(modelName.prefix(18)) + "..." : modelName)
                                 .font(.caption)
                         }
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
                         .background(Capsule()
                             .fill(Color(NSColor.controlBackgroundColor)))
                         .overlay(
@@ -249,6 +266,22 @@ struct ConfigurationRow: View {
                         )
                     }
                     
+                    if config.autoSendKey.isEnabled {
+                        HStack(spacing: 4) {
+                            Image(systemName: "keyboard")
+                                .font(.system(size: 10))
+                            Text(config.autoSendKey.displayName)
+                                .font(.caption)
+                        }
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Capsule()
+                            .fill(Color(NSColor.controlBackgroundColor)))
+                        .overlay(
+                            Capsule()
+                                .stroke(Color(NSColor.separatorColor), lineWidth: 0.5)
+                        )
+                    }
                     if config.isAIEnhancementEnabled {
                         if config.useScreenCapture {
                             HStack(spacing: 4) {
@@ -257,8 +290,8 @@ struct ConfigurationRow: View {
                                 Text("Context Awareness")
                                     .font(.caption)
                             }
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
                             .background(Capsule()
                                 .fill(Color(NSColor.controlBackgroundColor)))
                             .overlay(
@@ -273,21 +306,33 @@ struct ConfigurationRow: View {
                             Text(selectedPrompt?.title ?? "AI")
                                 .font(.caption)
                         }
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
                         .background(Capsule()
                             .fill(Color.accentColor.opacity(0.1)))
                         .foregroundColor(.accentColor)
                     }
-                    
+
                     Spacer()
                 }
-                .padding(.vertical, 10)
+                
+                .padding(.vertical, 6)
                 .padding(.horizontal, 16)
+                .background(Color.secondary.opacity(0.1))
             }
     }
+    .clipShape(RoundedRectangle(cornerRadius: 16))
     .background(CardBackground(isSelected: isEditing))
     .opacity(config.isEnabled ? 1.0 : 0.5)
+
+    .onHover { hovering in
+        withAnimation(.easeInOut(duration: 0.15)) {
+            isHovering = hovering
+        }
+    }
+    .onTapGesture(count: 2) {
+        onEditConfig(config)
+    }
     .contextMenu {
         Button(action: {
             onEditConfig(config)
@@ -295,9 +340,19 @@ struct ConfigurationRow: View {
             Label("Edit", systemImage: "pencil")
         }
         Button(role: .destructive, action: {
-            powerModeManager.removeConfiguration(with: config.id)
+            let alert = NSAlert()
+            alert.messageText = "Delete Power Mode?"
+            alert.informativeText = "Are you sure you want to delete the '\(config.name)' power mode? This action cannot be undone."
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "Delete")
+            alert.addButton(withTitle: "Cancel")
+            alert.buttons[0].hasDestructiveAction = true
+            
+            if alert.runModal() == .alertFirstButtonReturn {
+                powerModeManager.removeConfiguration(with: config.id)
+            }
         }) {
-            Label("Remove", systemImage: "trash")
+            Label("Delete", systemImage: "trash")
         }
     }
     }
@@ -357,4 +412,4 @@ struct AppGridItem: View {
         }
         .buttonStyle(.plain)
     }
-} 
+}

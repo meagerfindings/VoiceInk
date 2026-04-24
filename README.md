@@ -56,7 +56,7 @@ As an open-source project, you can build VoiceInk yourself by following the inst
 
 ## Requirements
 
-- macOS 14.0 or later
+- macOS 14.4 or later
 
 ## Documentation
 
@@ -66,13 +66,14 @@ As an open-source project, you can build VoiceInk yourself by following the inst
 
 ## Contributing
 
-We welcome contributions! However, please note that all contributions should align with the project's goals and vision. Before starting work on any feature or fix:
+This project is **not accepting pull requests** at this time. You're welcome to fork and modify VoiceInk for your own use.
 
-1. Read our [Contributing Guidelines](CONTRIBUTING.md)
-2. Open an issue to discuss your proposed changes
-3. Wait for maintainer feedback
+You can still contribute by:
+- Reporting bugs via [issues](https://github.com/Beingpax/VoiceInk/issues)
+- Suggesting features or enhancements
+- Improving documentation via issues
 
-For build instructions, see our [Building Guide](BUILDING.md).
+For more details, see our [Contributing Guidelines](CONTRIBUTING.md). For build instructions, see our [Building Guide](BUILDING.md).
 
 ## License
 
@@ -97,6 +98,8 @@ If you encounter any issues or have questions, please:
 - [LaunchAtLogin](https://github.com/sindresorhus/LaunchAtLogin) - Launch at login functionality
 - [MediaRemoteAdapter](https://github.com/ejbills/mediaremote-adapter) - Media playback control during recording
 - [Zip](https://github.com/marmelroy/Zip) - File compression and decompression utilities
+- [SelectedTextKit](https://github.com/tisfeng/SelectedTextKit) - A modern macOS library for getting selected text
+- [Swift Atomics](https://github.com/apple/swift-atomics) - Low-level atomic operations for thread-safe concurrent programming
 
 
 ---

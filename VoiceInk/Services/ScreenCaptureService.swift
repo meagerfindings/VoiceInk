@@ -1,181 +1,110 @@
 import Foundation
 import AppKit
 import Vision
-import os
+import ScreenCaptureKit
 
+@MainActor
 class ScreenCaptureService: ObservableObject {
     @Published var isCapturing = false
     @Published var lastCapturedText: String?
-    
-    private let logger = Logger(
-        subsystem: "com.prakashjoshipax.VoiceInk",
-        category: "aienhancement"
-    )
-    
-    private func getActiveWindowInfo() -> (title: String, ownerName: String, windowID: CGWindowID)? {
-        let windowListInfo = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] ?? []
-        
-        // Find the frontmost window that isn't our own app
-        if let frontWindow = windowListInfo.first(where: { info in
-            let layer = info[kCGWindowLayer as String] as? Int32 ?? 0
-            let ownerName = info[kCGWindowOwnerName as String] as? String ?? ""
-            // Exclude our own app and system UI elements
-            return layer == 0 && ownerName != "VoiceInk" && !ownerName.contains("Dock") && !ownerName.contains("Menu Bar")
-        }) {
-            guard let windowID = frontWindow[kCGWindowNumber as String] as? CGWindowID,
-                  let ownerName = frontWindow[kCGWindowOwnerName as String] as? String,
-                  let title = frontWindow[kCGWindowName as String] as? String else {
-                return nil
-            }
-            
-            return (title: title, ownerName: ownerName, windowID: windowID)
+
+    private func findActiveWindow(in content: SCShareableContent) -> SCWindow? {
+        let currentPID = ProcessInfo.processInfo.processIdentifier
+        let frontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
+
+        if let frontmostPID,
+           let window = content.windows.first(where: {
+               $0.owningApplication?.processID == frontmostPID &&
+               $0.owningApplication?.processID != currentPID &&
+               $0.windowLayer == 0 &&
+               $0.isOnScreen
+           }) {
+            return window
         }
-        
-        return nil
-    }
-    
-    func captureActiveWindow() -> NSImage? {
-        guard let windowInfo = getActiveWindowInfo() else {
-            logger.notice("❌ Failed to get window info for capture")
-            return captureFullScreen()
-        }
-        
-        // Capture the specific window
-        let cgImage = CGWindowListCreateImage(
-            .null,
-            .optionIncludingWindow,
-            windowInfo.windowID,
-            [.boundsIgnoreFraming, .bestResolution]
-        )
-        
-        if let cgImage = cgImage {
-            logger.notice("✅ Successfully captured window")
-            return NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
-        } else {
-            logger.notice("⚠️ Window-specific capture failed, trying full screen")
-            return captureFullScreen()
+
+        return content.windows.first {
+            $0.owningApplication?.processID != currentPID &&
+            $0.windowLayer == 0 &&
+            $0.isOnScreen
         }
     }
-    
-    private func captureFullScreen() -> NSImage? {
-        logger.notice("📺 Attempting full screen capture")
-        
-        if let screen = NSScreen.main {
-            let rect = screen.frame
-            let cgImage = CGWindowListCreateImage(
-                rect,
-                .optionOnScreenOnly,
-                kCGNullWindowID,
-                [.bestResolution]
-            )
-            
-            if let cgImage = cgImage {
-                logger.notice("✅ Full screen capture successful")
-                return NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
-            }
-        }
-        
-        logger.notice("❌ All capture methods failed")
-        return nil
-    }
-    
-    func extractText(from image: NSImage, completion: @escaping (String?) -> Void) {
-        guard let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
-            logger.notice("❌ Failed to convert NSImage to CGImage for text extraction")
-            completion(nil)
-            return
-        }
-        
-        let requestHandler = VNImageRequestHandler(cgImage: cgImage, options: [:])
-        let request = VNRecognizeTextRequest { request, error in
-            if let error = error {
-                self.logger.notice("❌ Text recognition error: \(error.localizedDescription, privacy: .public)")
-                completion(nil)
-                return
-            }
-            
-            guard let observations = request.results as? [VNRecognizedTextObservation] else {
-                self.logger.notice("❌ No text observations found")
-                completion(nil)
-                return
-            }
-            
-            let text = observations.compactMap { observation in
-                observation.topCandidates(1).first?.string
-            }.joined(separator: "\n")
-            
-            if text.isEmpty {
-                self.logger.notice("⚠️ Text extraction returned empty result")
-                completion(nil)
-            } else {
-                self.logger.notice("✅ Text extraction successful, found \(text.count, privacy: .public) characters")
-                completion(text)
-            }
-        }
-        
-        // Configure the recognition level
-        request.recognitionLevel = .accurate
-        request.usesLanguageCorrection = true
-        
-        do {
-            try requestHandler.perform([request])
-        } catch {
-            logger.notice("❌ Failed to perform text recognition: \(error.localizedDescription, privacy: .public)")
-            completion(nil)
-        }
-    }
-    
+
     func captureAndExtractText() async -> String? {
-        guard !isCapturing else { 
-            logger.notice("⚠️ Screen capture already in progress, skipping")
-            return nil 
-        }
-        
+        guard !isCapturing else { return nil }
+
         isCapturing = true
-        defer { 
-            DispatchQueue.main.async {
-                self.isCapturing = false
-            }
+        defer {
+            DispatchQueue.main.async { self.isCapturing = false }
         }
-        
-        logger.notice("🎬 Starting screen capture")
-        
-        // Get window info
-        guard let windowInfo = getActiveWindowInfo() else {
-            logger.notice("❌ Failed to get window info")
+
+        do {
+            let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+
+            guard let window = findActiveWindow(in: content) else { return nil }
+
+            let title = window.title ?? window.owningApplication?.applicationName ?? "Unknown"
+            let appName = window.owningApplication?.applicationName ?? "Unknown"
+
+            let filter = SCContentFilter(desktopIndependentWindow: window)
+
+            let configuration = SCStreamConfiguration()
+            configuration.width = Int(window.frame.width) * 2
+            configuration.height = Int(window.frame.height) * 2
+
+            let cgImage = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration)
+            let nsImage = NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
+
+            var contextText = """
+            Active Window: \(title)
+            Application: \(appName)
+
+            """
+
+            let extractedText = await extractText(from: nsImage)
+            if let extractedText, !extractedText.isEmpty {
+                contextText += "Window Content:\n\(extractedText)"
+            } else {
+                contextText += "Window Content:\nNo text detected via OCR"
+            }
+
+            lastCapturedText = contextText
+            return contextText
+
+        } catch {
             return nil
         }
-        
-        logger.notice("🎯 Found window: \(windowInfo.title, privacy: .public) (\(windowInfo.ownerName, privacy: .public))")
-        
-        // Start with window metadata
-        var contextText = """
-        Active Window: \(windowInfo.title)
-        Application: \(windowInfo.ownerName)
-        
-        """
-        
-        // Capture and process window content
-        if let capturedImage = captureActiveWindow() {
-            let extractedText = await withCheckedContinuation({ continuation in
-                extractText(from: capturedImage) { text in
-                    continuation.resume(returning: text)
-                }
-            })
-            
-            if let extractedText = extractedText {
-                contextText += "Window Content:\n\(extractedText)"
-                logger.notice("✅ Captured text successfully")
-                
-                await MainActor.run {
-                    self.lastCapturedText = contextText
-                }
-                
-                return contextText
-            }
-        }
-        
-        logger.notice("❌ Capture attempt failed")
-        return nil
     }
-} 
+
+    private func extractText(from image: NSImage) async -> String? {
+        guard let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+            return nil
+        }
+
+        let result: Result<String?, Error> = await Task.detached(priority: .userInitiated) {
+            let request = VNRecognizeTextRequest()
+            request.recognitionLevel = .accurate
+            request.usesLanguageCorrection = true
+            request.automaticallyDetectsLanguage = true
+
+            let requestHandler = VNImageRequestHandler(cgImage: cgImage, options: [:])
+
+            do {
+                try requestHandler.perform([request])
+                guard let observations = request.results else {
+                    return .success(nil)
+                }
+                let text = observations
+                    .compactMap { $0.topCandidates(1).first?.string }
+                    .joined(separator: "\n")
+                return .success(text.isEmpty ? nil : text)
+            } catch {
+                return .failure(error)
+            }
+        }.value
+
+        switch result {
+        case .success(let text): return text
+        case .failure: return nil
+        }
+    }
+}

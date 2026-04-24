@@ -7,7 +7,7 @@ enum LanguageDisplayMode {
 }
 
 struct LanguageSelectionView: View {
-    @ObservedObject var whisperState: WhisperState
+    @ObservedObject var transcriptionModelManager: TranscriptionModelManager
     @AppStorage("SelectedLanguage") private var selectedLanguage: String = "en"
     // Add display mode parameter with full as the default
     var displayMode: LanguageDisplayMode = .full
@@ -24,18 +24,25 @@ struct LanguageSelectionView: View {
         NotificationCenter.default.post(name: .languageDidChange, object: nil)
         NotificationCenter.default.post(name: .AppSettingsDidChange, object: nil)
     }
-    
+
     // Function to check if current model is multilingual
     private func isMultilingualModel() -> Bool {
-        guard let currentModel = whisperState.currentTranscriptionModel else {
+        guard let currentModel = transcriptionModelManager.currentTranscriptionModel else {
             return false
         }
         return currentModel.isMultilingualModel
     }
 
+    private func languageSelectionDisabled() -> Bool {
+        guard let provider = transcriptionModelManager.currentTranscriptionModel?.provider else {
+            return false
+        }
+        return provider == .fluidAudio || provider == .gemini
+    }
+
     // Function to get current model's supported languages
     private func getCurrentModelLanguages() -> [String: String] {
-        guard let currentModel = whisperState.currentTranscriptionModel else {
+        guard let currentModel = transcriptionModelManager.currentTranscriptionModel else {
             return ["en": "English"] // Default to English if no model found
         }
         return currentModel.supportedLanguages
@@ -67,9 +74,24 @@ struct LanguageSelectionView: View {
             Text("Transcription Language")
                 .font(.headline)
 
-            if let currentModel = whisperState.currentTranscriptionModel
+            if let currentModel = transcriptionModelManager.currentTranscriptionModel
             {
-                if isMultilingualModel() {
+                if languageSelectionDisabled() {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Language: Autodetected")
+                            .font(.subheadline)
+                            .foregroundColor(.primary)
+
+                        Text("Current model: \(currentModel.displayName)")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+
+                        Text("The transcription language is automatically detected by the model.")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    .disabled(true)
+                } else if isMultilingualModel() {
                     VStack(alignment: .leading, spacing: 8) {
                         Picker("Select Language", selection: $selectedLanguage) {
                             ForEach(
@@ -134,7 +156,15 @@ struct LanguageSelectionView: View {
     // New compact view for menu bar
     private var menuItemView: some View {
         Group {
-            if isMultilingualModel() {
+            if languageSelectionDisabled() {
+                Button {
+                    // Do nothing, just showing info
+                } label: {
+                    Text("Language: Autodetected")
+                        .foregroundColor(.secondary)
+                }
+                .disabled(true)
+            } else if isMultilingualModel() {
                 Menu {
                     ForEach(
                         getCurrentModelLanguages().sorted(by: {

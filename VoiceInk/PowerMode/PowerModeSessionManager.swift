@@ -23,46 +23,55 @@ class PowerModeSessionManager {
     private let sessionKey = "powerModeActiveSession.v1"
     private var isApplyingPowerModeConfig = false
 
-    private var whisperState: WhisperState?
+    private weak var stateProvider: (any PowerModeStateProvider)?
     private var enhancementService: AIEnhancementService?
 
     private init() {
         recoverSession()
     }
 
-    func configure(whisperState: WhisperState, enhancementService: AIEnhancementService) {
-        self.whisperState = whisperState
+    /// Configure with new VoiceInkEngine-based provider.
+    func configure(engine: any PowerModeStateProvider, enhancementService: AIEnhancementService) {
+        self.stateProvider = engine
         self.enhancementService = enhancementService
     }
 
     func beginSession(with config: PowerModeConfig) async {
-        guard let whisperState = whisperState, let enhancementService = enhancementService else {
+        guard let stateProvider = stateProvider, let enhancementService = enhancementService else {
             print("SessionManager not configured.")
             return
         }
 
-        let originalState = ApplicationState(
-            isEnhancementEnabled: enhancementService.isEnhancementEnabled,
-            useScreenCaptureContext: enhancementService.useScreenCaptureContext,
-            selectedPromptId: enhancementService.selectedPromptId?.uuidString,
-            selectedAIProvider: enhancementService.getAIService()?.selectedProvider.rawValue,
-            selectedAIModel: enhancementService.getAIService()?.currentModel,
-            selectedLanguage: UserDefaults.standard.string(forKey: "SelectedLanguage"),
-            transcriptionModelName: whisperState.currentTranscriptionModel?.name
-        )
+        // Only capture baseline if NO session exists
+        if loadSession() == nil {
+            let originalState = ApplicationState(
+                isEnhancementEnabled: enhancementService.isEnhancementEnabled,
+                useScreenCaptureContext: enhancementService.useScreenCaptureContext,
+                selectedPromptId: enhancementService.selectedPromptId?.uuidString,
+                selectedAIProvider: enhancementService.getAIService()?.selectedProvider.rawValue,
+                selectedAIModel: enhancementService.getAIService()?.currentModel,
+                selectedLanguage: UserDefaults.standard.string(forKey: "SelectedLanguage"),
+                transcriptionModelName: stateProvider.currentTranscriptionModel?.name
+            )
 
-        let newSession = PowerModeSession(
-            id: UUID(),
-            startTime: Date(),
-            originalState: originalState
-        )
-        saveSession(newSession)
-        
-        NotificationCenter.default.addObserver(self, selector: #selector(updateSessionSnapshot), name: .AppSettingsDidChange, object: nil)
+            let newSession = PowerModeSession(
+                id: UUID(),
+                startTime: Date(),
+                originalState: originalState
+            )
+            saveSession(newSession)
 
+            NotificationCenter.default.addObserver(self, selector: #selector(updateSessionSnapshot), name: .AppSettingsDidChange, object: nil)
+        }
+
+        // Always apply the new configuration
         isApplyingPowerModeConfig = true
         await applyConfiguration(config)
         isApplyingPowerModeConfig = false
+    }
+
+    var hasActiveSession: Bool {
+        return loadSession() != nil
     }
 
     func endSession() async {
@@ -71,16 +80,18 @@ class PowerModeSessionManager {
         isApplyingPowerModeConfig = true
         await restoreState(session.originalState)
         isApplyingPowerModeConfig = false
-        
+
         NotificationCenter.default.removeObserver(self, name: .AppSettingsDidChange, object: nil)
 
         clearSession()
     }
-    
+
     @objc func updateSessionSnapshot() {
         guard !isApplyingPowerModeConfig else { return }
-        
-        guard var session = loadSession(), let whisperState = whisperState, let enhancementService = enhancementService else { return }
+
+        guard var session = loadSession(),
+              let stateProvider = stateProvider,
+              let enhancementService = enhancementService else { return }
 
         let updatedState = ApplicationState(
             isEnhancementEnabled: enhancementService.isEnhancementEnabled,
@@ -89,15 +100,16 @@ class PowerModeSessionManager {
             selectedAIProvider: enhancementService.getAIService()?.selectedProvider.rawValue,
             selectedAIModel: enhancementService.getAIService()?.currentModel,
             selectedLanguage: UserDefaults.standard.string(forKey: "SelectedLanguage"),
-            transcriptionModelName: whisperState.currentTranscriptionModel?.name
+            transcriptionModelName: stateProvider.currentTranscriptionModel?.name
         )
-        
+
         session.originalState = updatedState
         saveSession(session)
     }
 
     private func applyConfiguration(_ config: PowerModeConfig) async {
-        guard let enhancementService = enhancementService else { return }
+        guard let enhancementService = enhancementService,
+              let stateProvider = stateProvider else { return }
 
         await MainActor.run {
             enhancementService.isEnhancementEnabled = config.isAIEnhancementEnabled
@@ -124,20 +136,20 @@ class PowerModeSessionManager {
             }
         }
 
-        if let whisperState = whisperState,
-           let modelName = config.selectedTranscriptionModelName,
-           let selectedModel = await whisperState.allAvailableModels.first(where: { $0.name == modelName }),
-           whisperState.currentTranscriptionModel?.name != modelName {
+        if let modelName = config.selectedTranscriptionModelName,
+           let selectedModel = await stateProvider.allAvailableModels.first(where: { $0.name == modelName }),
+           stateProvider.currentTranscriptionModel?.name != modelName {
             await handleModelChange(to: selectedModel)
         }
-        
+
         await MainActor.run {
             NotificationCenter.default.post(name: .powerModeConfigurationApplied, object: nil)
         }
     }
 
     private func restoreState(_ state: ApplicationState) async {
-        guard let enhancementService = enhancementService else { return }
+        guard let enhancementService = enhancementService,
+              let stateProvider = stateProvider else { return }
 
         await MainActor.run {
             enhancementService.isEnhancementEnabled = state.isEnhancementEnabled
@@ -159,37 +171,35 @@ class PowerModeSessionManager {
             }
         }
 
-        if let whisperState = whisperState,
-           let modelName = state.transcriptionModelName,
-           let selectedModel = await whisperState.allAvailableModels.first(where: { $0.name == modelName }),
-           whisperState.currentTranscriptionModel?.name != modelName {
+        if let modelName = state.transcriptionModelName,
+           let selectedModel = await stateProvider.allAvailableModels.first(where: { $0.name == modelName }),
+           stateProvider.currentTranscriptionModel?.name != modelName {
             await handleModelChange(to: selectedModel)
         }
     }
-    
-    private func handleModelChange(to newModel: any TranscriptionModel) async {
-        guard let whisperState = whisperState else { return }
 
-        await whisperState.setDefaultTranscriptionModel(newModel)
+    private func handleModelChange(to newModel: any TranscriptionModel) async {
+        guard let stateProvider = stateProvider else { return }
+
+        await stateProvider.setDefaultTranscriptionModel(newModel)
 
         switch newModel.provider {
-        case .local:
-            await whisperState.cleanupModelResources()
-            if let localModel = await whisperState.availableModels.first(where: { $0.name == newModel.name }) {
+        case .whisper:
+            await stateProvider.cleanupModelResources()
+            if let whisperModel = await stateProvider.availableModels.first(where: { $0.name == newModel.name }) {
                 do {
-                    try await whisperState.loadModel(localModel)
+                    try await stateProvider.loadModel(whisperModel)
                 } catch {
-                    print("Power Mode: Failed to load local model '\(localModel.name)': \(error)")
+                    print("Power Mode: Failed to load local model '\(whisperModel.name)': \(error)")
                 }
             }
-        case .parakeet:
-            await whisperState.cleanupModelResources()
-
+        case .fluidAudio:
+            await stateProvider.cleanupModelResources()
         default:
-            await whisperState.cleanupModelResources()
+            await stateProvider.cleanupModelResources()
         }
     }
-    
+
     private func recoverSession() {
         guard let session = loadSession() else { return }
         print("Recovering abandoned Power Mode session.")
@@ -206,7 +216,7 @@ class PowerModeSessionManager {
             print("Error saving Power Mode session: \(error)")
         }
     }
-    
+
     private func loadSession() -> PowerModeSession? {
         guard let data = UserDefaults.standard.data(forKey: sessionKey) else { return nil }
         do {

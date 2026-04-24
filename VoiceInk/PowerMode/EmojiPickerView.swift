@@ -89,7 +89,7 @@ struct EmojiPickerView: View {
                             .foregroundColor(inputFeedbackMessage == "Emoji already exists!" || inputFeedbackMessage == "Invalid emoji." ? .red : .secondary)
                             .transition(.opacity)
                     }
-                    Text("Tip: Use ⌃⌘Space for emoji picker.")
+                    Text("Tip: Use ⌃⌘Space for emoji picker or paste an emoji.")
                         .font(.caption2)
                         .foregroundColor(.secondary)
                         .padding(.top, 2)
@@ -99,7 +99,6 @@ struct EmojiPickerView: View {
             }
         }
         .padding()
-        .background(.regularMaterial)
         .frame(minWidth: 260, idealWidth: 300, maxWidth: 320, minHeight: 150, idealHeight: 280, maxHeight: 350)
         .alert("Emoji in Use", isPresented: $showingEmojiInUseAlert, presenting: emojiForAlert) { emojiStr in
             Button("OK", role: .cancel) { }
@@ -161,10 +160,6 @@ private struct EmojiButton: View {
                 Text(emoji)
                     .font(.largeTitle) 
                     .frame(width: 44, height: 44)
-                    .background(
-                        Circle()
-                            .fill(isSelected ? Color.accentColor.opacity(0.25) : Color.clear)
-                    )
                     .overlay( 
                         Circle()
                             .strokeBorder(isSelected ? Color.accentColor : Color.gray.opacity(0.3), lineWidth: isSelected ? 2 : 1)
@@ -197,10 +192,6 @@ private struct AddEmojiButton: View {
                 .labelStyle(.iconOnly)
                 .foregroundColor(.accentColor)
                 .frame(width: 44, height: 44)
-                .background(
-                    Circle()
-                        .fill(Color.secondary.opacity(0.1))
-                )
                 .overlay(
                     Circle()
                         .strokeBorder(Color.gray.opacity(0.3), lineWidth: 1)
@@ -213,12 +204,21 @@ private struct AddEmojiButton: View {
 
 extension String {
     var isValidEmoji: Bool {
-        guard !self.isEmpty else { return false }
-        return self.count == 1 && self.unicodeScalars.first?.properties.isEmoji ?? false
+        guard !self.isEmpty, self.count == 1, let char = self.first else { return false }
+        let scalars = char.unicodeScalars
+        if scalars.count > 1 {
+            return scalars.contains { $0.properties.isEmoji }
+        }
+        return scalars.first?.properties.isEmojiPresentation == true
     }
 
     func firstValidEmojiCharacter() -> String {
-        return self.filter { $0.unicodeScalars.allSatisfy { $0.properties.isEmoji } }.prefix(1).map(String.init).joined()
+        for char in self {
+            if String(char).isValidEmoji {
+                return String(char)
+            }
+        }
+        return ""
     }
 }
 

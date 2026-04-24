@@ -5,11 +5,84 @@ This guide provides detailed instructions for building VoiceInk from source.
 ## Prerequisites
 
 Before you begin, ensure you have:
-- macOS 14.0 or later
+- macOS 14.4 or later
 - Xcode (latest version recommended)
 - Swift (latest version recommended)
+- Git (for cloning repositories)
 
-## Building whisper.cpp Framework
+## Quick Start with Makefile (Recommended)
+
+The easiest way to build VoiceInk is using the included Makefile, which automates the entire build process including building and linking the whisper framework.
+
+### Simple Build Commands
+
+```bash
+# Clone the repository
+git clone https://github.com/Beingpax/VoiceInk.git
+cd VoiceInk
+
+# Build everything (recommended for first-time setup)
+make all
+
+# Or for development (build and run)
+make dev
+```
+
+### Available Makefile Commands
+
+- `make check` or `make healthcheck` - Verify all required tools are installed
+- `make whisper` - Clone and build whisper.cpp XCFramework automatically
+- `make setup` - Prepare the whisper framework for linking
+- `make build` - Build the VoiceInk Xcode project
+- `make local` - Build for local use (no Apple Developer certificate needed)
+- `make run` - Launch the built VoiceInk app
+- `make dev` - Build and run (ideal for development workflow)
+- `make all` - Complete build process (default)
+- `make clean` - Remove build artifacts and dependencies
+- `make help` - Show all available commands
+
+### How the Makefile Helps
+
+The Makefile automatically:
+1. **Manages Dependencies**: Creates a dedicated `~/VoiceInk-Dependencies` directory for all external frameworks
+2. **Builds Whisper Framework**: Clones whisper.cpp and builds the XCFramework with the correct configuration
+3. **Handles Framework Linking**: Sets up the whisper.xcframework in the proper location for Xcode to find
+4. **Verifies Prerequisites**: Checks that git, xcodebuild, and swift are installed before building
+5. **Streamlines Development**: Provides convenient shortcuts for common development tasks
+
+This approach ensures consistent builds across different machines and eliminates manual framework setup errors.
+
+---
+
+## Building for Local Use (No Apple Developer Certificate)
+
+If you don't have an Apple Developer certificate, use `make local`:
+
+```bash
+git clone https://github.com/Beingpax/VoiceInk.git
+cd VoiceInk
+make local
+open ~/Downloads/VoiceInk.app
+```
+
+This builds VoiceInk with ad-hoc signing using a separate build configuration (`LocalBuild.xcconfig`) that requires no Apple Developer account.
+
+### How It Works
+
+The `make local` command uses:
+- `LocalBuild.xcconfig` to override signing and entitlements settings
+- `VoiceInk.local.entitlements` (stripped-down, no CloudKit/keychain groups)
+- `LOCAL_BUILD` Swift compilation flag for conditional code paths
+
+Your normal `make all` / `make build` commands are completely unaffected.
+
+---
+
+## Manual Build Process (Alternative)
+
+If you prefer to build manually or need more control over the build process, follow these steps:
+
+### Building whisper.cpp Framework
 
 1. Clone and build whisper.cpp:
 ```bash
@@ -19,7 +92,7 @@ cd whisper.cpp
 ```
 This will create the XCFramework at `build-apple/whisper.xcframework`.
 
-## Building VoiceInk
+### Building VoiceInk
 
 1. Clone the VoiceInk repository:
 ```bash

@@ -13,8 +13,9 @@ class NotificationManager {
     func showNotification(
         title: String,
         type: AppNotificationView.NotificationType,
-        duration: TimeInterval = 5.0,
-        onTap: (() -> Void)? = nil
+        duration: TimeInterval = 3.0,
+        onTap: (() -> Void)? = nil,
+        actionButton: (label: String, action: () -> Void)? = nil
     ) {
         dismissTimer?.invalidate()
         dismissTimer = nil
@@ -38,7 +39,8 @@ class NotificationManager {
                     self?.dismissNotification()
                 }
             },
-            onTap: onTap
+            onTap: onTap,
+            actionButton: actionButton
         )
         let hostingController = NSHostingController(rootView: notificationView)
         let size = hostingController.view.fittingSize

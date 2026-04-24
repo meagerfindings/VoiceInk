@@ -1,13 +1,134 @@
 import SwiftUI
 
+// MARK: - Shared Analysis Logic
+
+enum PanelMode {
+    case info
+    case analysis
+}
+
+struct PerformanceAnalyzer {
+    struct AnalysisResult {
+        let totalTranscripts: Int
+        let totalWithTranscriptionData: Int
+        let totalAudioDuration: TimeInterval
+        let totalEnhancedFiles: Int
+        let transcriptionModels: [ModelStat]
+        let enhancementModels: [ModelStat]
+    }
+
+    struct ModelStat: Identifiable {
+        let id = UUID()
+        let name: String
+        let fileCount: Int
+        let totalProcessingTime: TimeInterval
+        let avgProcessingTime: TimeInterval
+        let avgAudioDuration: TimeInterval
+        let speedFactor: Double
+    }
+
+    static func analyze(transcriptions: [Transcription]) -> AnalysisResult {
+        let totalTranscripts = transcriptions.count
+        let totalWithTranscriptionData = transcriptions.filter { $0.transcriptionDuration != nil }.count
+        let totalAudioDuration = transcriptions.reduce(0) { $0 + $1.duration }
+        let totalEnhancedFiles = transcriptions.filter { $0.enhancedText != nil && $0.enhancementDuration != nil }.count
+
+        let transcriptionStats = processStats(
+            for: transcriptions,
+            modelNameKeyPath: \.transcriptionModelName,
+            durationKeyPath: \.transcriptionDuration,
+            audioDurationKeyPath: \.duration
+        )
+
+        let enhancementStats = processStats(
+            for: transcriptions,
+            modelNameKeyPath: \.aiEnhancementModelName,
+            durationKeyPath: \.enhancementDuration
+        )
+
+        return AnalysisResult(
+            totalTranscripts: totalTranscripts,
+            totalWithTranscriptionData: totalWithTranscriptionData,
+            totalAudioDuration: totalAudioDuration,
+            totalEnhancedFiles: totalEnhancedFiles,
+            transcriptionModels: transcriptionStats,
+            enhancementModels: enhancementStats
+        )
+    }
+
+    static func processStats(for transcriptions: [Transcription],
+                             modelNameKeyPath: KeyPath<Transcription, String?>,
+                             durationKeyPath: KeyPath<Transcription, TimeInterval?>,
+                             audioDurationKeyPath: KeyPath<Transcription, TimeInterval>? = nil) -> [ModelStat] {
+
+        let relevantTranscriptions = transcriptions.filter {
+            $0[keyPath: modelNameKeyPath] != nil && $0[keyPath: durationKeyPath] != nil
+        }
+
+        let groupedByModel = Dictionary(grouping: relevantTranscriptions) {
+            $0[keyPath: modelNameKeyPath] ?? "Unknown"
+        }
+
+        return groupedByModel.map { modelName, items in
+            let fileCount = items.count
+            let totalProcessingTime = items.reduce(0) { $0 + ($1[keyPath: durationKeyPath] ?? 0) }
+            let avgProcessingTime = totalProcessingTime / Double(fileCount)
+
+            let totalAudioDuration = items.reduce(0) { $0 + $1.duration }
+            let avgAudioDuration = totalAudioDuration / Double(fileCount)
+
+            var speedFactor = 0.0
+            if let audioDurationKeyPath = audioDurationKeyPath, totalProcessingTime > 0 {
+                speedFactor = totalAudioDuration / totalProcessingTime
+            }
+
+            return ModelStat(
+                name: modelName,
+                fileCount: fileCount,
+                totalProcessingTime: totalProcessingTime,
+                avgProcessingTime: avgProcessingTime,
+                avgAudioDuration: avgAudioDuration,
+                speedFactor: speedFactor
+            )
+        }.sorted { $0.avgProcessingTime < $1.avgProcessingTime }
+    }
+
+    static func getMacModel() -> String {
+        var size = 0
+        sysctlbyname("hw.model", nil, &size, nil, 0)
+        var machine = [CChar](repeating: 0, count: size)
+        sysctlbyname("hw.model", &machine, &size, nil, 0)
+        return String(cString: machine)
+    }
+
+    static func getCPUInfo() -> String {
+        var size = 0
+        sysctlbyname("machdep.cpu.brand_string", nil, &size, nil, 0)
+        var buffer = [CChar](repeating: 0, count: size)
+        sysctlbyname("machdep.cpu.brand_string", &buffer, &size, nil, 0)
+        return String(cString: buffer)
+    }
+
+    static func getMemoryInfo() -> String {
+        let totalMemory = ProcessInfo.processInfo.physicalMemory
+        return ByteCountFormatter.string(fromByteCount: Int64(totalMemory), countStyle: .memory)
+    }
+}
+
+// MARK: - Sheet View (existing)
+
 struct PerformanceAnalysisView: View {
     @Environment(\.dismiss) private var dismiss
     let transcriptions: [Transcription]
-    private let analysis: AnalysisResult
+    private let analysis: PerformanceAnalyzer.AnalysisResult
+
+    private let columns: [GridItem] = [
+        GridItem(.adaptive(minimum: 250), spacing: 16)
+    ]
 
     init(transcriptions: [Transcription]) {
         self.transcriptions = transcriptions
-        self.analysis = Self.analyze(transcriptions: transcriptions)
+        self.analysis = PerformanceAnalyzer.analyze(transcriptions: transcriptions)
     }
 
     var body: some View {
@@ -83,9 +204,9 @@ struct PerformanceAnalysisView: View {
                 .foregroundColor(.primary)
 
             HStack(spacing: 12) {
-                SystemInfoCard(label: "Device", value: getMacModel())
-                SystemInfoCard(label: "Processor", value: getCPUInfo())
-                SystemInfoCard(label: "Memory", value: getMemoryInfo())
+                SystemInfoCard(label: "Device", value: PerformanceAnalyzer.getMacModel())
+                SystemInfoCard(label: "Processor", value: PerformanceAnalyzer.getCPUInfo())
+                SystemInfoCard(label: "Memory", value: PerformanceAnalyzer.getMemoryInfo())
             }
         }
     }
@@ -96,8 +217,10 @@ struct PerformanceAnalysisView: View {
                 .font(.system(.title2, design: .default, weight: .bold))
                 .foregroundColor(.primary)
 
-            ForEach(analysis.transcriptionModels) { modelStat in
-                TranscriptionModelCard(modelStat: modelStat)
+            LazyVGrid(columns: columns, spacing: 16) {
+                ForEach(analysis.transcriptionModels) { modelStat in
+                    TranscriptionModelCard(modelStat: modelStat)
+                }
             }
         }
     }
@@ -108,8 +231,10 @@ struct PerformanceAnalysisView: View {
                 .font(.system(.title2, design: .default, weight: .bold))
                 .foregroundColor(.primary)
 
-            ForEach(analysis.enhancementModels) { modelStat in
-                EnhancementModelCard(modelStat: modelStat)
+            LazyVGrid(columns: columns, spacing: 16) {
+                ForEach(analysis.enhancementModels) { modelStat in
+                    EnhancementModelCard(modelStat: modelStat)
+                }
             }
         }
     }
@@ -120,118 +245,7 @@ struct PerformanceAnalysisView: View {
         formatter.unitsStyle = .abbreviated
         return formatter.string(from: duration) ?? "0s"
     }
-
-    // MARK: - Analysis Logic
-    
-    struct AnalysisResult {
-        let totalTranscripts: Int
-        let totalWithTranscriptionData: Int
-        let totalAudioDuration: TimeInterval
-        let totalEnhancedFiles: Int
-        let transcriptionModels: [ModelStat]
-        let enhancementModels: [ModelStat]
-    }
-
-    struct ModelStat: Identifiable {
-        let id = UUID()
-        let name: String
-        let fileCount: Int
-        let totalProcessingTime: TimeInterval
-        let avgProcessingTime: TimeInterval
-        let avgAudioDuration: TimeInterval
-        let speedFactor: Double // RTFX
-    }
-
-    static func analyze(transcriptions: [Transcription]) -> AnalysisResult {
-        let totalTranscripts = transcriptions.count
-        let totalWithTranscriptionData = transcriptions.filter { $0.transcriptionDuration != nil }.count
-        let totalAudioDuration = transcriptions.reduce(0) { $0 + $1.duration }
-        let totalEnhancedFiles = transcriptions.filter { $0.enhancedText != nil && $0.enhancementDuration != nil }.count
-        
-        let transcriptionStats = processStats(
-            for: transcriptions,
-            modelNameKeyPath: \.transcriptionModelName,
-            durationKeyPath: \.transcriptionDuration,
-            audioDurationKeyPath: \.duration
-        )
-        
-        let enhancementStats = processStats(
-            for: transcriptions,
-            modelNameKeyPath: \.aiEnhancementModelName,
-            durationKeyPath: \.enhancementDuration
-        )
-        
-        return AnalysisResult(
-            totalTranscripts: totalTranscripts,
-            totalWithTranscriptionData: totalWithTranscriptionData,
-            totalAudioDuration: totalAudioDuration,
-            totalEnhancedFiles: totalEnhancedFiles,
-            transcriptionModels: transcriptionStats,
-            enhancementModels: enhancementStats
-        )
-    }
-    
-    static func processStats(for transcriptions: [Transcription],
-                             modelNameKeyPath: KeyPath<Transcription, String?>,
-                             durationKeyPath: KeyPath<Transcription, TimeInterval?>,
-                             audioDurationKeyPath: KeyPath<Transcription, TimeInterval>? = nil) -> [ModelStat] {
-        
-        let relevantTranscriptions = transcriptions.filter {
-            $0[keyPath: modelNameKeyPath] != nil && $0[keyPath: durationKeyPath] != nil
-        }
-        
-        let groupedByModel = Dictionary(grouping: relevantTranscriptions) {
-            $0[keyPath: modelNameKeyPath] ?? "Unknown"
-        }
-        
-        return groupedByModel.map { modelName, items in
-            let fileCount = items.count
-            let totalProcessingTime = items.reduce(0) { $0 + ($1[keyPath: durationKeyPath] ?? 0) }
-            let avgProcessingTime = totalProcessingTime / Double(fileCount)
-            
-            let totalAudioDuration = items.reduce(0) { $0 + $1.duration }
-            let avgAudioDuration = totalAudioDuration / Double(fileCount)
-            
-            var speedFactor = 0.0
-            if let audioDurationKeyPath = audioDurationKeyPath, totalProcessingTime > 0 {
-                speedFactor = totalAudioDuration / totalProcessingTime
-            }
-            
-            return ModelStat(
-                name: modelName,
-                fileCount: fileCount,
-                totalProcessingTime: totalProcessingTime,
-                avgProcessingTime: avgProcessingTime,
-                avgAudioDuration: avgAudioDuration,
-                speedFactor: speedFactor
-            )
-        }.sorted { $0.avgProcessingTime < $1.avgProcessingTime }
-    }
 }
-
-// MARK: - Helper Functions for System Info
-
-private func getMacModel() -> String {
-    var size = 0
-    sysctlbyname("hw.model", nil, &size, nil, 0)
-    var machine = [CChar](repeating: 0, count: size)
-    sysctlbyname("hw.model", &machine, &size, nil, 0)
-    return String(cString: machine)
-}
-
-private func getCPUInfo() -> String {
-    var size = 0
-    sysctlbyname("machdep.cpu.brand_string", nil, &size, nil, 0)
-    var buffer = [CChar](repeating: 0, count: size)
-    sysctlbyname("machdep.cpu.brand_string", &buffer, &size, nil, 0)
-    return String(cString: buffer)
-}
-
-private func getMemoryInfo() -> String {
-    let totalMemory = ProcessInfo.processInfo.physicalMemory
-    return ByteCountFormatter.string(fromByteCount: Int64(totalMemory), countStyle: .memory)
-}
-
 
 // MARK: - Subviews
 
@@ -242,16 +256,23 @@ struct SummaryCard: View {
     let color: Color
 
     var body: some View {
-        VStack(spacing: 4) {
+        VStack(spacing: 8) {
+            Image(systemName: icon)
+                .font(.system(size: 20, weight: .medium))
+                .foregroundColor(color)
+            
             Text(value)
-                .font(.system(.title3, design: .rounded, weight: .bold))
+                .font(.system(.title2, design: .rounded, weight: .bold))
                 .foregroundColor(.primary)
             
             Text(label)
                 .font(.caption)
                 .foregroundColor(.secondary)
         }
-        .frame(maxWidth: .infinity)
+        .padding(16)
+        .frame(maxWidth: .infinity, minHeight: 100)
+        .background(MetricCardBackground(color: color))
+        .cornerRadius(12)
     }
 }
 
@@ -291,13 +312,13 @@ struct SystemInfoCard: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, minHeight: 60, alignment: .leading)
-        .background(CardBackground(isSelected: false))
-        .cornerRadius(8)
+        .background(MetricCardBackground(color: .secondary))
+        .cornerRadius(12)
     }
 }
 
 struct TranscriptionModelCard: View {
-    let modelStat: PerformanceAnalysisView.ModelStat
+    let modelStat: PerformanceAnalyzer.ModelStat
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -306,7 +327,9 @@ struct TranscriptionModelCard: View {
                 Text(modelStat.name)
                     .font(.headline)
                     .fontWeight(.semibold)
-                
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+
                 Spacer()
                 
                 Text("\(modelStat.fileCount) transcripts")
@@ -315,33 +338,40 @@ struct TranscriptionModelCard: View {
             }
             
             Divider()
-            
-            VStack(spacing: 12) {
-                // First row of metrics
-                HStack(spacing: 24) {
+
+            VStack(spacing: 16) {
+                // Main metric: Speed Factor
+                VStack {
+                    Text(String(format: "%.1fx", modelStat.speedFactor))
+                        .font(.system(size: 24, weight: .bold, design: .rounded))
+                        .foregroundColor(.mint)
+                    Text("Faster than Real-time")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                .frame(maxWidth: .infinity)
+                
+                Divider()
+
+                // Secondary metrics
+                HStack {
                     MetricDisplay(
-                        title: "Avg. Transcript Duration", 
+                        title: "Avg. Audio",
                         value: formatDuration(modelStat.avgAudioDuration),
                         color: .indigo
                     )
-                    
+                    Spacer()
                     MetricDisplay(
-                        title: "Avg. Transcription Time",
+                        title: "Avg. Process Time",
                         value: String(format: "%.2f s", modelStat.avgProcessingTime),
                         color: .teal
-                    )
-                    
-                    MetricDisplay(
-                        title: "Speed Factor",
-                        value: String(format: "%.1fx faster", modelStat.speedFactor),
-                        color: .mint
                     )
                 }
             }
         }
         .padding(16)
-        .background(CardBackground(isSelected: false))
-        .cornerRadius(8)
+        .background(MetricCardBackground(color: .mint))
+        .cornerRadius(12)
     }
     
     private func formatDuration(_ duration: TimeInterval) -> String {
@@ -353,7 +383,7 @@ struct TranscriptionModelCard: View {
 }
 
 struct EnhancementModelCard: View {
-    let modelStat: PerformanceAnalysisView.ModelStat
+    let modelStat: PerformanceAnalyzer.ModelStat
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -362,7 +392,9 @@ struct EnhancementModelCard: View {
                 Text(modelStat.name)
                     .font(.headline)
                     .fontWeight(.semibold)
-                
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+
                 Spacer()
                 
                 Text("\(modelStat.fileCount) transcripts")
@@ -372,19 +404,52 @@ struct EnhancementModelCard: View {
             
             Divider()
             
-            VStack(spacing: 12) {
-                HStack(spacing: 24) {
-                    MetricDisplay(
-                        title: "Avg. Enhancement Time",
-                        value: String(format: "%.2f s", modelStat.avgProcessingTime),
-                        color: .indigo
-                    )
-                }
+            VStack(alignment: .center) {
+                Text(String(format: "%.2f s", modelStat.avgProcessingTime))
+                    .font(.system(size: 24, weight: .bold, design: .rounded))
+                    .foregroundColor(.indigo)
+                Text("Avg. Enhancement Time")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
             }
+            .frame(maxWidth: .infinity)
         }
         .padding(16)
-        .background(CardBackground(isSelected: false))
-        .cornerRadius(8)
+        .background(MetricCardBackground(color: .indigo))
+        .cornerRadius(12)
+    }
+}
+
+struct MetricCardBackground: View {
+    let color: Color
+    
+    var body: some View {
+        RoundedRectangle(cornerRadius: 12)
+            .fill(
+                LinearGradient(
+                    gradient: Gradient(stops: [
+                        .init(color: color.opacity(0.15), location: 0),
+                        .init(color: Color(NSColor.windowBackgroundColor).opacity(0.1), location: 0.6)
+                    ]),
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 12)
+                    .stroke(
+                        LinearGradient(
+                            gradient: Gradient(colors: [
+                                Color(NSColor.quaternaryLabelColor).opacity(0.3),
+                                Color(NSColor.quaternaryLabelColor).opacity(0.1)
+                            ]),
+                            startPoint: .top,
+                            endPoint: .bottom
+                        ),
+                        lineWidth: 1
+                    )
+            )
+            .shadow(color: Color.black.opacity(0.05), radius: 5, y: 3)
     }
 }
 

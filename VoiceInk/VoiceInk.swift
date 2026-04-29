@@ -369,7 +369,7 @@ struct VoiceInkApp: App {
 }
 
 class UpdaterViewModel: ObservableObject {
-    @AppStorage("autoUpdateCheck") private var autoUpdateCheck = true
+    @AppStorage("autoUpdateCheck") private var autoUpdateCheck = false
 
     private let updaterController: SPUStandardUpdaterController
 

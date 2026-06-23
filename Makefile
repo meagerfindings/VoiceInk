@@ -3,8 +3,9 @@ DEPS_DIR := $(HOME)/VoiceInk-Dependencies
 WHISPER_CPP_DIR := $(DEPS_DIR)/whisper.cpp
 FRAMEWORK_PATH := $(WHISPER_CPP_DIR)/build-apple/whisper.xcframework
 LOCAL_DERIVED_DATA := $(CURDIR)/.local-build
+DEVELOPMENT_TEAM_ID := 8ST6HG22YT
 
-.PHONY: all clean whisper setup build local check healthcheck help dev run
+.PHONY: all clean whisper setup build local local-signed check healthcheck help dev run
 
 # Default target
 all: check build
@@ -76,6 +77,35 @@ local: check setup
 		exit 1; \
 	fi
 
+# Build for local use, signed with your Apple Developer team identity.
+# Unlike `local` (ad-hoc), this produces a STABLE code signature across rebuilds,
+# so macOS TCC permissions (Input Monitoring, Accessibility) survive each rebuild
+# instead of silently breaking. Requires a valid signing identity for the team.
+local-signed: check setup
+	@echo "Building VoiceInk for local use (signed with team $(DEVELOPMENT_TEAM_ID))..."
+	@rm -rf "$(LOCAL_DERIVED_DATA)"
+	xcodebuild -project VoiceInk.xcodeproj -scheme VoiceInk -configuration Debug \
+		-derivedDataPath "$(LOCAL_DERIVED_DATA)" \
+		CODE_SIGN_STYLE=Automatic \
+		DEVELOPMENT_TEAM="$(DEVELOPMENT_TEAM_ID)" \
+		CODE_SIGN_ENTITLEMENTS="$(CURDIR)/VoiceInk/VoiceInk.local.entitlements" \
+		SWIFT_ACTIVE_COMPILATION_CONDITIONS='$$(inherited) LOCAL_BUILD' \
+		build
+	@APP_PATH="$(LOCAL_DERIVED_DATA)/Build/Products/Debug/VoiceInk.app" && \
+	if [ -d "$$APP_PATH" ]; then \
+		echo "Copying VoiceInk.app to ~/Downloads..."; \
+		rm -rf "$$HOME/Downloads/VoiceInk.app"; \
+		ditto "$$APP_PATH" "$$HOME/Downloads/VoiceInk.app"; \
+		xattr -cr "$$HOME/Downloads/VoiceInk.app"; \
+		echo ""; \
+		echo "Build complete! App saved to: ~/Downloads/VoiceInk.app"; \
+		echo "Signed with team $(DEVELOPMENT_TEAM_ID) — TCC permissions will persist across rebuilds."; \
+		echo "Run with: open ~/Downloads/VoiceInk.app"; \
+	else \
+		echo "Error: Could not find built VoiceInk.app at $$APP_PATH"; \
+		exit 1; \
+	fi
+
 # Run application
 run:
 	@if [ -d "$$HOME/Downloads/VoiceInk.app" ]; then \
@@ -106,7 +136,8 @@ help:
 	@echo "  whisper            Clone and build whisper.cpp XCFramework"
 	@echo "  setup              Copy whisper XCFramework to VoiceInk project"
 	@echo "  build              Build the VoiceInk Xcode project"
-	@echo "  local              Build for local use (no Apple Developer certificate needed)"
+	@echo "  local              Build for local use (ad-hoc signed, no certificate needed)"
+	@echo "  local-signed       Build for local use, signed with your team (TCC perms persist)"
 	@echo "  run                Launch the built VoiceInk app"
 	@echo "  dev                Build and run the app (for development)"
 	@echo "  all                Run full build process (default)"

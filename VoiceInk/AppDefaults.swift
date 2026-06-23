@@ -6,7 +6,6 @@ enum AppDefaults {
             // Onboarding & General
             "hasCompletedOnboarding": false,
             "enableAnnouncements": true,
-            "autoUpdateCheck": true,
 
             // Clipboard
             "restoreClipboardAfterPaste": true,
@@ -18,6 +17,8 @@ enum AppDefaults {
             "audioResumptionDelay": 0.0,
             "isPauseMediaEnabled": false,
             "isSoundFeedbackEnabled": true,
+            CustomSoundManager.SoundType.start.builtInSoundKey: CustomSoundManager.SoundType.start.defaultBuiltInSound.rawValue,
+            CustomSoundManager.SoundType.stop.builtInSoundKey: CustomSoundManager.SoundType.stop.defaultBuiltInSound.rawValue,
 
             // Recording & Transcription
             "IsTextFormattingEnabled": true,
@@ -39,7 +40,7 @@ enum AppDefaults {
             // UI & Behavior
             "IsMenuBarOnly": false,
             "powerModePersistConfig": false,
-            // Hotkey
+            // Shortcuts
             "isMiddleClickToggleEnabled": false,
             "middleClickActivationDelay": 200,
 
@@ -53,5 +54,8 @@ enum AppDefaults {
             "PrewarmModelOnWake": true,
 
         ])
+
+        PunctuationCleanupMode.migrateLegacyUserDefaultIfNeeded()
+        PasteMethod.migrateLegacyUserDefaultIfNeeded()
     }
 }

@@ -57,6 +57,31 @@ enum AppTheme {
         static let orange = Color(nsColor: .systemOrange)
     }
 
+    enum Insights {
+        static let page = neutral(light: 0.995, dark: 0.065)
+        static let card = neutral(light: 0.955, dark: 0.105)
+        static let elevated = neutral(light: 1.0, dark: 0.145)
+        static let hover = Color.primary.opacity(0.045)
+        static let border = AppTheme.Border.tint
+        static let productivity = Color(nsColor: .systemBlue)
+        static let activity = Color(nsColor: .systemTeal)
+        static let selection = productivity.opacity(0.12)
+        static let selectionText = Color(nsColor: NSColor(name: nil) { appearance in
+            if appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua {
+                return NSColor(srgbRed: 0.42, green: 0.68, blue: 1.0, alpha: 1)
+            }
+            return NSColor(srgbRed: 0.10, green: 0.32, blue: 0.66, alpha: 1)
+        })
+        static let grid = Color.primary.opacity(0.075)
+
+        private static func neutral(light: CGFloat, dark: CGFloat) -> Color {
+            Color(nsColor: NSColor(name: nil) { appearance in
+                let isDark = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+                return NSColor(white: isDark ? dark : light, alpha: 1)
+            })
+        }
+    }
+
     enum Sidebar {
         static let dashboard = Color(nsColor: .systemOrange)
         static let modes = Color(nsColor: .systemIndigo)

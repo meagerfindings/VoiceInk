@@ -18,6 +18,12 @@ struct DashboardProductivityPlotArea: View {
         GeometryReader { geometry in
             let labelHeight: CGFloat = 30
             let plotHeight = max(0, geometry.size.height - labelHeight)
+            let plotGeometry = DashboardProductivityPlotGeometry(
+                pointCount: visiblePoints.count,
+                horizontalSlotCount: horizontalSlotCount,
+                yAxisUpperBound: yAxisUpperBound,
+                size: CGSize(width: geometry.size.width, height: plotHeight)
+            )
 
             VStack(spacing: 0) {
                 ZStack(alignment: .topLeading) {
@@ -25,7 +31,6 @@ struct DashboardProductivityPlotArea: View {
 
                     DashboardProductivityTrendLayer(
                         points: visiblePoints,
-                        guideIndices: guideIndices,
                         yAxisUpperBound: yAxisUpperBound,
                         horizontalSlotCount: horizontalSlotCount,
                         hoveredPointID: hoveredPointID
@@ -37,7 +42,7 @@ struct DashboardProductivityPlotArea: View {
                             .padding(.bottom, 12)
                     }
 
-                    hoverLayer(size: geometry.size, plotHeight: plotHeight)
+                    hoverLayer(geometry: plotGeometry)
                 }
                 .frame(height: plotHeight)
 
@@ -64,7 +69,7 @@ struct DashboardProductivityPlotArea: View {
                     ForEach(points.indices, id: \.self) { index in
                         let label = xAxisLabel(for: points[index], at: index)
                         if !label.isEmpty {
-                            axisLabel(label)
+                            DashboardProductivityXAxisLabel(label: label)
                                 .frame(width: 58, alignment: axisLabelAlignment(for: index))
                                 .position(
                                     x: axisLabelPosition(
@@ -81,7 +86,7 @@ struct DashboardProductivityPlotArea: View {
         }
     }
 
-    private func hoverLayer(size: CGSize, plotHeight: CGFloat) -> some View {
+    private func hoverLayer(geometry: DashboardProductivityPlotGeometry) -> some View {
         ZStack(alignment: .topLeading) {
             if let hoveredPoint, let hoveredIndex {
                 DashboardProductivityHoverTooltip(
@@ -90,8 +95,8 @@ struct DashboardProductivityPlotArea: View {
                 )
                 .position(
                     tooltipPosition(
-                        for: plotPoint(for: hoveredIndex, width: size.width, height: plotHeight),
-                        in: CGSize(width: size.width, height: plotHeight)
+                        for: geometry.point(for: hoveredIndex, words: hoveredPoint.words),
+                        in: geometry.size
                     )
                 )
                 .allowsHitTesting(false)
@@ -103,13 +108,13 @@ struct DashboardProductivityPlotArea: View {
                 .onContinuousHover { phase in
                     switch phase {
                     case .active(let location):
-                        updateHover(at: location, width: size.width)
+                        updateHover(at: location, geometry: geometry)
                     case .ended:
                         hoveredPointID = nil
                     }
                 }
         }
-        .frame(width: size.width, height: plotHeight)
+        .frame(width: geometry.size.width, height: geometry.size.height)
     }
 
     private var hoveredIndex: Int? {
@@ -127,37 +132,18 @@ struct DashboardProductivityPlotArea: View {
         return visiblePoints[index - 1]
     }
 
-    private func updateHover(at location: CGPoint, width: CGFloat) {
+    private func updateHover(at location: CGPoint, geometry: DashboardProductivityPlotGeometry) {
+        let width = geometry.size.width
         guard !visiblePoints.isEmpty, width > 0, location.x >= 0, location.x <= width else {
             hoveredPointID = nil
             return
         }
 
         let nearestIndex = visiblePoints.indices.min { lhs, rhs in
-            abs(xPosition(for: lhs, pointCount: visiblePoints.count, slotCount: horizontalSlotCount, width: width) - location.x)
-                < abs(xPosition(for: rhs, pointCount: visiblePoints.count, slotCount: horizontalSlotCount, width: width) - location.x)
+            abs(geometry.xPosition(for: lhs) - location.x)
+                < abs(geometry.xPosition(for: rhs) - location.x)
         }
         hoveredPointID = nearestIndex.map { visiblePoints[$0].id }
-    }
-
-    private func xPosition(for index: Int, pointCount: Int, slotCount: Int, width: CGFloat) -> CGFloat {
-        let resolvedSlotCount = max(slotCount, pointCount)
-        guard resolvedSlotCount > 1 else { return width / 2 }
-        return width * CGFloat(index) / CGFloat(resolvedSlotCount - 1)
-    }
-
-    private func plotPoint(for index: Int, width: CGFloat, height: CGFloat) -> CGPoint {
-        let maximum = max(yAxisUpperBound, 1)
-        let progress = min(max(CGFloat(visiblePoints[index].words) / CGFloat(maximum), 0), 1)
-        return CGPoint(
-            x: xPosition(
-                for: index,
-                pointCount: visiblePoints.count,
-                slotCount: horizontalSlotCount,
-                width: width
-            ),
-            y: height - (height * progress)
-        )
     }
 
     private func tooltipPosition(for point: CGPoint, in size: CGSize) -> CGPoint {
@@ -186,12 +172,13 @@ struct DashboardProductivityPlotArea: View {
     }
 
     private func axisLabelPosition(for index: Int, width: CGFloat, labelWidth: CGFloat) -> CGFloat {
-        let pointX = xPosition(
-            for: index,
+        let geometry = DashboardProductivityPlotGeometry(
             pointCount: points.count,
-            slotCount: horizontalSlotCount,
-            width: width
+            horizontalSlotCount: horizontalSlotCount,
+            yAxisUpperBound: yAxisUpperBound,
+            size: CGSize(width: width, height: 0)
         )
+        let pointX = geometry.xPosition(for: index)
         return min(max(pointX, labelWidth / 2), max(labelWidth / 2, width - labelWidth / 2))
     }
 
@@ -199,31 +186,6 @@ struct DashboardProductivityPlotArea: View {
         if index == 0 { return .leading }
         if index == points.count - 1 { return .trailing }
         return .center
-    }
-
-    private func axisLabel(_ label: String) -> some View {
-        DashboardProductivityXAxisLabel(label: label)
-    }
-
-    private var guideIndices: [Int] {
-        guard !visiblePoints.isEmpty else {
-            return []
-        }
-
-        var indices = Set<Int>()
-
-        if period == .today {
-            for index in [0, 6, 12, 18, 23] where index < visiblePoints.count {
-                indices.insert(index)
-            }
-        } else {
-            for index in visiblePoints.indices where !xAxisLabel(for: points[index], at: index).isEmpty {
-                indices.insert(index)
-            }
-        }
-
-        indices.insert(visiblePoints.count - 1)
-        return indices.sorted()
     }
 
     private func xAxisLabel(for point: DashboardProductivityPoint, at index: Int) -> String {
@@ -306,7 +268,7 @@ private struct DashboardProductivityHoverTooltip: View {
         .padding(.vertical, 8)
         .frame(width: 208, alignment: .leading)
         .background(
-            Color(nsColor: .controlBackgroundColor),
+            AppTheme.Insights.elevated,
             in: RoundedRectangle(cornerRadius: 10, style: .continuous)
         )
         .shadow(color: Color.black.opacity(0.08), radius: 6, x: 0, y: 3)
@@ -344,17 +306,17 @@ private struct DashboardProductivityHoverTooltip: View {
 
     private var comparisonColor: Color {
         guard let previousPoint else {
-            return AppTheme.Text.muted
+            return AppTheme.Text.secondary
         }
 
         let difference = point.words - previousPoint.words
         if difference > 0 {
-            return AppTheme.Status.positive.opacity(0.86)
+            return AppTheme.Status.positive
         }
         if difference < 0 {
-            return AppTheme.Status.error.opacity(0.86)
+            return AppTheme.Status.error
         }
-        return AppTheme.Text.muted
+        return AppTheme.Text.secondary
     }
 }
 

@@ -79,7 +79,13 @@ struct DashboardContent: View {
             let contentWidth = DashboardLayout.contentWidth(for: geometry.size.width)
 
             ZStack(alignment: .top) {
-                DashboardAmbientBackground()
+                if isInsightsViewPresented && canViewInsights {
+                    AppTheme.Insights.page
+                        .ignoresSafeArea()
+                        .allowsHitTesting(false)
+                } else {
+                    DashboardAmbientBackground()
+                }
 
                 ScrollView {
                     Group {
@@ -627,6 +633,7 @@ struct DashboardContent: View {
             selectedPeriod: $selectedInsightPeriod,
             productivityPoints: selectedProductivityPoints,
             dailyActivityPoints: selectedDailyActivityPoints,
+            allTimeDailyActivityPoints: statsSummary.allTimeDailyActivity,
             peakHoursSummary: selectedPeakHours,
             isPeakHoursLocked: shouldLockPeakHours,
             timeSavedSummary: selectedTimeSavedSummary,

@@ -1,14 +1,35 @@
 import Foundation
 import SwiftUI
 
+struct DashboardProductivityPlotGeometry {
+    let pointCount: Int
+    let horizontalSlotCount: Int
+    let yAxisUpperBound: Int
+    let size: CGSize
+
+    func xPosition(for index: Int) -> CGFloat {
+        let slotCount = max(horizontalSlotCount, pointCount)
+        guard slotCount > 1 else { return size.width / 2 }
+        return size.width * CGFloat(index) / CGFloat(slotCount - 1)
+    }
+
+    func point(for index: Int, words: Int) -> CGPoint {
+        let maximum = max(yAxisUpperBound, 1)
+        let progress = min(max(CGFloat(words) / CGFloat(maximum), 0), 1)
+        return CGPoint(
+            x: xPosition(for: index),
+            y: size.height - (size.height * progress)
+        )
+    }
+}
+
 struct DashboardProductivityTrendLayer: View {
     let points: [DashboardProductivityPoint]
-    let guideIndices: [Int]
     let yAxisUpperBound: Int
     let horizontalSlotCount: Int
     let hoveredPointID: Date?
 
-    private let lineTint = AppTheme.Accent.strong
+    private let lineTint = AppTheme.Insights.productivity
 
     private var hasVisibleData: Bool {
         points.contains { $0.words > 0 }
@@ -22,18 +43,17 @@ struct DashboardProductivityTrendLayer: View {
                 horizontalSlotCount: horizontalSlotCount,
                 size: geometry.size
             )
-            let guideAnchors = Self.guideAnchors(for: guideIndices, in: renderedPoints)
 
             ZStack(alignment: .topLeading) {
-                if renderedPoints.count > 0 {
+                if !renderedPoints.isEmpty {
                     if hasVisibleData {
                         DashboardProductivityAreaFillShape(points: renderedPoints)
                             .fill(
                                 LinearGradient(
                                     colors: [
-                                        lineTint.opacity(0.30),
-                                        lineTint.opacity(0.10),
-                                        lineTint.opacity(0.015),
+                                        lineTint.opacity(0.24),
+                                        lineTint.opacity(0.07),
+                                        lineTint.opacity(0.0),
                                     ],
                                     startPoint: .top,
                                     endPoint: .bottom
@@ -45,15 +65,6 @@ struct DashboardProductivityTrendLayer: View {
                                 lineTint,
                                 style: StrokeStyle(lineWidth: 2.4, lineCap: .round, lineJoin: .round)
                             )
-                            .shadow(color: lineTint.opacity(0.12), radius: 2, y: 1)
-
-                        ForEach(guideAnchors.dropLast()) { guide in
-                            DashboardProductivityXAxisGuide(
-                                height: geometry.size.height,
-                                tint: lineTint
-                            )
-                            .position(x: guide.point.x, y: geometry.size.height / 2)
-                        }
 
                         if let latestPoint = renderedPoints.last {
                             DashboardProductivityCurrentValueMarker(tint: lineTint)
@@ -66,13 +77,13 @@ struct DashboardProductivityTrendLayer: View {
                             let hoveredPoint = renderedPoints[hoveredIndex]
 
                             Rectangle()
-                                .fill(AppTheme.Border.subtle.opacity(0.9))
+                                .fill(AppTheme.Insights.border)
                                 .frame(width: 1, height: geometry.size.height)
                                 .position(x: hoveredPoint.x, y: geometry.size.height / 2)
 
                             Circle()
                                 .fill(lineTint)
-                                .stroke(Color(nsColor: .controlBackgroundColor), lineWidth: 2)
+                                .stroke(AppTheme.Insights.card, lineWidth: 2)
                                 .frame(width: 9, height: 9)
                                 .position(x: hoveredPoint.x, y: hoveredPoint.y)
                         }
@@ -98,69 +109,33 @@ struct DashboardProductivityTrendLayer: View {
             return []
         }
 
-        let maximum = max(yAxisUpperBound, 1)
-        let slotCount = max(horizontalSlotCount, points.count)
-        let denominator = max(slotCount - 1, 1)
+        let geometry = DashboardProductivityPlotGeometry(
+            pointCount: points.count,
+            horizontalSlotCount: horizontalSlotCount,
+            yAxisUpperBound: yAxisUpperBound,
+            size: size
+        )
 
         return points.enumerated().map { index, point in
-            let x =
-                slotCount == 1
-                ? size.width / 2
-                : size.width * CGFloat(index) / CGFloat(denominator)
-            let progress = min(max(CGFloat(point.words) / CGFloat(maximum), 0), 1)
-            let y = size.height - (size.height * progress)
-
-            return CGPoint(x: x, y: y)
+            geometry.point(for: index, words: point.words)
         }
     }
-
-    private static func guideAnchors(for indices: [Int], in renderedPoints: [CGPoint])
-        -> [DashboardProductivityGuideAnchor]
-    {
-        indices.compactMap { index in
-            guard renderedPoints.indices.contains(index) else {
-                return nil
-            }
-
-            return DashboardProductivityGuideAnchor(index: index, point: renderedPoints[index])
-        }
-    }
-}
-
-private struct DashboardProductivityGuideAnchor: Identifiable {
-    let index: Int
-    let point: CGPoint
-
-    var id: Int { index }
 }
 
 struct DashboardProductivityGrid: View {
     var body: some View {
-        ZStack {
-            VStack(spacing: 0) {
-                ForEach(0..<5, id: \.self) { index in
-                    Rectangle()
-                        .fill(AppTheme.Border.subtle.opacity(index == 4 ? 0.90 : 0.42))
-                        .frame(height: 1)
+        VStack(spacing: 0) {
+            ForEach(0..<5, id: \.self) { index in
+                Rectangle()
+                    .fill(AppTheme.Insights.grid)
+                    .frame(height: 1)
 
-                    if index < 4 {
-                        Spacer(minLength: 0)
-                    }
-                }
-            }
-
-            HStack(spacing: 0) {
-                ForEach(0..<5, id: \.self) { index in
-                    Rectangle()
-                        .fill(AppTheme.Border.subtle.opacity(index == 0 ? 0.40 : 0.30))
-                        .frame(width: 1)
-
-                    if index < 4 {
-                        Spacer(minLength: 0)
-                    }
+                if index < 4 {
+                    Spacer(minLength: 0)
                 }
             }
         }
+        .accessibilityHidden(true)
     }
 }
 
@@ -318,7 +293,7 @@ private struct DashboardProductivityCurrentValueMarker: View {
     var body: some View {
         ZStack {
             Circle()
-                .fill(Color(nsColor: .controlBackgroundColor))
+                .fill(AppTheme.Insights.card)
                 .frame(width: 10, height: 10)
 
             Circle()
@@ -329,29 +304,6 @@ private struct DashboardProductivityCurrentValueMarker: View {
                 .stroke(tint.opacity(0.20), lineWidth: 3)
                 .frame(width: 14, height: 14)
         }
-        .shadow(color: tint.opacity(0.12), radius: 2, y: 1)
-            .accessibilityHidden(true)
-    }
-}
-private struct DashboardProductivityXAxisGuide: View {
-    let height: CGFloat
-    let tint: Color
-
-    var body: some View {
-        Rectangle()
-            .fill(
-                LinearGradient(
-                    colors: [
-                        tint.opacity(0.00),
-                        tint.opacity(0.10),
-                        tint.opacity(0.04),
-                        tint.opacity(0.00),
-                    ],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-            )
-            .frame(width: 1, height: height)
-            .accessibilityHidden(true)
+        .accessibilityHidden(true)
     }
 }

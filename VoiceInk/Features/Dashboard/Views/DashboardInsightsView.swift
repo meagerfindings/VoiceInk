@@ -4,6 +4,7 @@ struct DashboardInsightsView: View {
     @Binding var selectedPeriod: DashboardInsightPeriod
     let productivityPoints: [DashboardProductivityPoint]
     let dailyActivityPoints: [DashboardProductivityPoint]
+    let allTimeDailyActivityPoints: [DashboardProductivityPoint]
     let peakHoursSummary: DashboardPeakHoursSummary
     let isPeakHoursLocked: Bool
     let timeSavedSummary: DashboardTimeSavedSummary
@@ -17,7 +18,7 @@ struct DashboardInsightsView: View {
     let onViewModelPerformance: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 22) {
+        VStack(alignment: .leading, spacing: 20) {
             header
 
             DashboardEditorialSummaryCard(
@@ -25,7 +26,7 @@ struct DashboardInsightsView: View {
             )
 
             DashboardProductivityCard(
-                period: $selectedPeriod,
+                period: selectedPeriod,
                 points: productivityPoints,
                 updatedAtText: updatedAtText,
                 isRefreshingStats: isRefreshingStats,
@@ -33,8 +34,8 @@ struct DashboardInsightsView: View {
             )
 
             DashboardActivityCalendarCard(
-                points: dailyActivityPoints,
-                summary: timeSavedSummary,
+                points: allTimeDailyActivityPoints,
+                selectedPoints: dailyActivityPoints,
                 peakHoursSummary: peakHoursSummary,
                 isPeakHoursLocked: isPeakHoursLocked
             )
@@ -53,34 +54,33 @@ struct DashboardInsightsView: View {
     }
 
     private var header: some View {
-        HStack(alignment: .top, spacing: 16) {
+        HStack(alignment: .center, spacing: 14) {
+            Button(action: onBack) {
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 12, weight: .semibold))
+                    .frame(width: 36, height: 36)
+            }
+            .buttonStyle(DashboardInsightButtonStyle())
+            .help("Back to dashboard")
+            .accessibilityLabel("Back to dashboard")
+
             VStack(alignment: .leading, spacing: 3) {
                 Text("VoiceInk Insights")
-                    .font(.system(size: 26, weight: .bold, design: .rounded))
+                    .font(.system(size: 26, weight: .bold))
                     .foregroundStyle(AppTheme.Text.primary)
 
                 Text("A closer look at your VoiceInk usage.")
-                    .font(.system(size: 13, weight: .medium))
+                    .font(.system(size: 13))
                     .foregroundStyle(AppTheme.Text.secondary)
             }
+            .layoutPriority(1)
 
-            Spacer()
+            Spacer(minLength: 16)
 
-            HStack(spacing: 8) {
-                AppIconButton(
-                    systemName: "chevron.left",
-                    help: "Back to dashboard",
-                    size: 34,
-                    iconSize: 12,
-                    cornerRadius: 17,
-                    action: onBack
-                )
-
-                InsightPeriodPicker(
-                    title: "Insights period",
-                    selection: $selectedPeriod
-                )
-            }
+            InsightPeriodPicker(
+                title: "Insights period",
+                selection: $selectedPeriod
+            )
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }

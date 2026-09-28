@@ -2,7 +2,8 @@ import Foundation
 import SwiftUI
 
 struct DashboardProductivityCard: View {
-    @Binding var period: DashboardInsightPeriod
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let period: DashboardInsightPeriod
     let points: [DashboardProductivityPoint]
     let updatedAtText: String
     let isRefreshingStats: Bool
@@ -12,7 +13,7 @@ struct DashboardProductivityCard: View {
         VStack(alignment: .leading, spacing: 18) {
             HStack(alignment: .center, spacing: 16) {
                 Text(period.chartTitle)
-                    .font(.system(size: 18, weight: .bold, design: .rounded))
+                    .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(AppTheme.Text.primary)
                     .lineLimit(1)
                     .minimumScaleFactor(0.84)
@@ -22,11 +23,11 @@ struct DashboardProductivityCard: View {
                 HStack(spacing: 8) {
                     Text(statusText)
                         .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(AppTheme.Text.muted)
+                        .foregroundStyle(AppTheme.Text.secondary)
                         .lineLimit(1)
                         .minimumScaleFactor(0.86)
                         .contentTransition(.opacity)
-                        .animation(.easeInOut(duration: 0.18), value: isRefreshingStats)
+                        .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: isRefreshingStats)
 
                     DashboardStatsRefreshButton(
                         isRefreshing: isRefreshingStats,
@@ -39,79 +40,11 @@ struct DashboardProductivityCard: View {
             DashboardProductivityChart(period: period, points: points)
                 .frame(height: 208)
         }
-        .padding(18)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(DashboardInsightCardBackground(cornerRadius: 16))
+        .dashboardInsightCardStyle()
     }
 
     private var statusText: String {
         isRefreshingStats ? String(localized: "Updating") : updatedAtText
-    }
-}
-struct DashboardEditorialSummaryCard: View {
-    let summary: DashboardTimeSavedSummary
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            Text("You made room for")
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(AppTheme.Text.secondary)
-
-            HStack(alignment: .lastTextBaseline, spacing: 12) {
-                Text(summary.hasData ? Formatters.formattedSavedTime(summary.timeSaved) : "--")
-                    .font(.system(size: 54, weight: .heavy, design: .rounded))
-                    .foregroundStyle(AppTheme.Accent.strong)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.55)
-
-                Text("of focused work")
-                    .font(.system(size: 18, weight: .bold, design: .rounded))
-                    .foregroundStyle(AppTheme.Text.secondary)
-                    .padding(.bottom, 7)
-            }
-
-            Rectangle()
-                .fill(AppTheme.Text.primary)
-                .frame(height: 2)
-
-            HStack(alignment: .top, spacing: 30) {
-                editorialFact(
-                    value: summary.hasData ? Formatters.formattedCompactNumber(summary.wordCount) : "--",
-                    copy: "words captured"
-                )
-                editorialFact(
-                    value: summary.hasData ? Formatters.formattedCompactNumber(summary.sessionCount) : "--",
-                    copy: "dictation sessions"
-                )
-                editorialFact(
-                    value: averageSessionText,
-                    copy: "words per average session"
-                )
-            }
-        }
-        .padding(24)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(DashboardInsightCardBackground(cornerRadius: 16))
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("VoiceInk impact summary")
-    }
-
-    private var averageSessionText: String {
-        guard summary.sessionCount > 0 else { return "--" }
-        return Formatters.formattedCompactNumber(summary.wordCount / summary.sessionCount)
-    }
-
-    private func editorialFact(value: String, copy: LocalizedStringKey) -> some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Text(value)
-                .font(.system(size: 18, weight: .heavy, design: .rounded))
-                .foregroundStyle(AppTheme.Text.primary)
-            Text(copy)
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(AppTheme.Text.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -130,15 +63,13 @@ private struct DashboardStatsRefreshButton: View {
                 } else {
                     Image(systemName: "arrow.clockwise")
                         .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(AppTheme.Text.primary.opacity(0.72))
+                        .foregroundStyle(AppTheme.Text.secondary)
                         .transition(.opacity)
                 }
             }
             .frame(width: 34, height: 34)
-            .background(AppCardBackground(cornerRadius: 17))
-            .animation(.easeInOut(duration: 0.18), value: isRefreshing)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(DashboardInsightButtonStyle())
         .disabled(isRefreshing)
         .help(refreshHelp)
         .accessibilityLabel(Text(refreshHelp))
@@ -155,25 +86,17 @@ private enum DashboardProductivityChartData {
         points: [DashboardProductivityPoint],
         now: Date = Date()
     ) -> [DashboardProductivityPoint] {
-        Array(points.prefix(visiblePointCount(for: period, points: points, now: now)))
-    }
-
-    static func visiblePointCount(
-        for period: DashboardInsightPeriod,
-        points: [DashboardProductivityPoint],
-        now: Date = Date()
-    ) -> Int {
         guard period == .today, let firstPoint = points.first else {
-            return points.count
+            return points
         }
 
         let calendar = DashboardPeriodWindows.dashboardCalendar()
 
         guard calendar.isDate(firstPoint.date, inSameDayAs: now) else {
-            return points.count
+            return points
         }
 
-        return min(points.count, calendar.component(.hour, from: now) + 1)
+        return Array(points.prefix(calendar.component(.hour, from: now) + 1))
     }
 
     static func yAxisUpperBound(for value: Int) -> Int {
@@ -193,32 +116,16 @@ private struct DashboardProductivityChart: View {
     let period: DashboardInsightPeriod
     let points: [DashboardProductivityPoint]
 
-    private var yAxisUpperBound: Int {
-        DashboardProductivityChartData.yAxisUpperBound(for: visiblePoints.map(\.words).max() ?? 0)
-    }
-
-    private var hasWords: Bool {
-        visiblePoints.contains { $0.words > 0 }
-    }
-
-    private var visiblePoints: [DashboardProductivityPoint] {
-        DashboardProductivityChartData.visiblePoints(for: period, points: points)
-    }
-
-    private var horizontalSlotCount: Int {
-        period == .today ? 24 : max(visiblePoints.count, 1)
-    }
-
-    private var yAxisLabels: [Int] {
+    private func yAxisLabels(upperBound: Int, hasWords: Bool) -> [Int] {
         guard hasWords else {
             return [0]
         }
 
         return [
-            yAxisUpperBound,
-            yAxisUpperBound * 3 / 4,
-            yAxisUpperBound / 2,
-            yAxisUpperBound / 4,
+            upperBound,
+            upperBound * 3 / 4,
+            upperBound / 2,
+            upperBound / 4,
             0,
         ]
         .reduce(into: []) { labels, value in
@@ -229,16 +136,20 @@ private struct DashboardProductivityChart: View {
     }
 
     var body: some View {
+        let visiblePoints = DashboardProductivityChartData.visiblePoints(for: period, points: points)
+        let upperBound = DashboardProductivityChartData.yAxisUpperBound(for: visiblePoints.lazy.map(\.words).max() ?? 0)
+        let labels = yAxisLabels(upperBound: upperBound, hasWords: visiblePoints.contains { $0.words > 0 })
+
         HStack(alignment: .top, spacing: 12) {
-            DashboardProductivityYAxis(labels: yAxisLabels)
+            DashboardProductivityYAxis(labels: labels)
                 .accessibilityHidden(true)
 
             DashboardProductivityPlotArea(
                 period: period,
                 points: points,
                 visiblePoints: visiblePoints,
-                yAxisUpperBound: yAxisUpperBound,
-                horizontalSlotCount: horizontalSlotCount
+                yAxisUpperBound: upperBound,
+                horizontalSlotCount: period == .today ? 24 : max(visiblePoints.count, 1)
             )
         }
         .accessibilityElement(children: .contain)
@@ -277,7 +188,7 @@ private struct DashboardProductivityYAxis: View {
 
             Text("Words")
                 .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(AppTheme.Text.secondary.opacity(0.82))
+                .foregroundStyle(AppTheme.Text.secondary)
                 .lineLimit(1)
                 .frame(height: 30, alignment: .topLeading)
         }

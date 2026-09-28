@@ -77,18 +77,19 @@ private struct ModelUsageSection: View {
     var body: some View {
         let totalAmount = rows.reduce(0) { $0 + $1.amount }
 
-        ModelInsightDetailSection(
+        ModelInsightSection(
             title: title,
             valueTitle: valueTitle,
             valueColumnWidth: 74,
             emptyTitle: emptyTitle,
             emptyIcon: emptyIcon,
             rows: rows
-        ) { row in
+        ) { row, columnWidth in
             ModelUsageDistributionRow(
                 row: row,
                 share: totalAmount > 0 ? row.amount / totalAmount : 0,
-                tint: tint
+                tint: tint,
+                valueColumnWidth: columnWidth
             )
         }
     }
@@ -98,6 +99,7 @@ private struct ModelUsageDistributionRow: View {
     let row: ModelUsageDistributionRowData
     let share: Double
     let tint: Color
+    let valueColumnWidth: CGFloat
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
@@ -126,7 +128,7 @@ private struct ModelUsageDistributionRow: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
-            ModelInsightValueText(text: row.value, width: 58)
+            ModelInsightValueText(text: row.value, width: valueColumnWidth)
         }
         .modelInsightRowStyle()
         .accessibilityElement(children: .combine)

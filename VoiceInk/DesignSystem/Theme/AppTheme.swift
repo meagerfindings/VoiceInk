@@ -66,18 +66,20 @@ enum AppTheme {
         static let productivity = Color(nsColor: .systemBlue)
         static let activity = Color(nsColor: .systemTeal)
         static let selection = productivity.opacity(0.12)
-        static let selectionText = Color(nsColor: NSColor(name: nil) { appearance in
-            if appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua {
-                return NSColor(srgbRed: 0.42, green: 0.68, blue: 1.0, alpha: 1)
-            }
-            return NSColor(srgbRed: 0.10, green: 0.32, blue: 0.66, alpha: 1)
-        })
+        static let selectionText = dynamic(
+            light: NSColor(srgbRed: 0.10, green: 0.32, blue: 0.66, alpha: 1),
+            dark: NSColor(srgbRed: 0.42, green: 0.68, blue: 1.0, alpha: 1)
+        )
         static let grid = Color.primary.opacity(0.075)
 
         private static func neutral(light: CGFloat, dark: CGFloat) -> Color {
+            dynamic(light: NSColor(white: light, alpha: 1), dark: NSColor(white: dark, alpha: 1))
+        }
+
+        private static func dynamic(light: NSColor, dark: NSColor) -> Color {
             Color(nsColor: NSColor(name: nil) { appearance in
                 let isDark = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
-                return NSColor(white: isDark ? dark : light, alpha: 1)
+                return isDark ? dark : light
             })
         }
     }

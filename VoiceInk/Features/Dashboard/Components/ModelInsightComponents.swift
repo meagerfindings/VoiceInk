@@ -229,64 +229,31 @@ struct ModelPreviewColumnsRow: View {
     }
 
     private var leftColumn: some View {
-        ModelPreviewColumn(
+        ModelInsightSection(
             title: leftTitle,
             valueTitle: leftValueTitle,
+            valueColumnWidth: valueColumnWidth,
             emptyTitle: leftEmptyTitle,
             emptyIcon: leftEmptyIcon,
             rows: leftRows,
-            valueColumnWidth: valueColumnWidth
-        )
+            presentation: .preview
+        ) { row, columnWidth in
+            ModelPreviewRowView(row: row, valueColumnWidth: columnWidth)
+        }
     }
 
     private var rightColumn: some View {
-        ModelPreviewColumn(
+        ModelInsightSection(
             title: rightTitle,
             valueTitle: rightValueTitle,
+            valueColumnWidth: valueColumnWidth,
             emptyTitle: rightEmptyTitle,
             emptyIcon: rightEmptyIcon,
             rows: rightRows,
-            valueColumnWidth: valueColumnWidth
-        )
-    }
-}
-
-private struct ModelPreviewColumn: View {
-    let title: LocalizedStringKey
-    let valueTitle: LocalizedStringKey
-    let emptyTitle: LocalizedStringKey
-    let emptyIcon: String
-    let rows: [ModelPreviewRow]
-    let valueColumnWidth: CGFloat
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(title)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-
-                Text(valueTitle)
-                    .frame(width: valueColumnWidth, alignment: .trailing)
-                    .padding(.trailing, 4)
-            }
-            .font(.system(size: 11, weight: .semibold))
-            .foregroundStyle(AppTheme.Text.secondary)
-            .lineLimit(1)
-
-            if rows.isEmpty {
-                InsightEmptyState(title: emptyTitle, icon: emptyIcon)
-            } else {
-                VStack(spacing: 8) {
-                    ForEach(rows) { row in
-                        ModelPreviewRowView(
-                            row: row,
-                            valueColumnWidth: valueColumnWidth
-                        )
-                    }
-                }
-            }
+            presentation: .preview
+        ) { row, columnWidth in
+            ModelPreviewRowView(row: row, valueColumnWidth: columnWidth)
         }
-        .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 }
 
@@ -325,7 +292,11 @@ private struct ModelPreviewRowView: View {
     }
 
     private var accessibilityValue: String {
-        String(localized: "\(row.kind.localizedTitle), \(row.value)")
+        String(localized: "\(row.kind.localizedTitle), \(row.value), \(sessionCountText)")
+    }
+
+    private var sessionCountText: String {
+        String(localized: "\(row.sessionCount) sessions")
     }
 }
 
@@ -345,10 +316,15 @@ struct ModelInsightValueText: View {
     }
 }
 
+enum ModelInsightRowLayout {
+    static let horizontalPadding: CGFloat = 12
+    static let verticalPadding: CGFloat = 10
+}
+
 extension View {
     func modelInsightRowStyle() -> some View {
-        padding(.horizontal, 12)
-            .padding(.vertical, 10)
+        padding(.horizontal, ModelInsightRowLayout.horizontalPadding)
+            .padding(.vertical, ModelInsightRowLayout.verticalPadding)
             .background(DashboardInsightRowBackground())
     }
 }

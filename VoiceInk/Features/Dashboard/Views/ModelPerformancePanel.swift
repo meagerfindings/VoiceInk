@@ -47,26 +47,26 @@ private struct ModelPerformancePanelContent: View {
         } else {
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
-                    ModelInsightDetailSection(
+                    ModelInsightSection(
                         title: "Transcription Models",
                         valueTitle: "Avg. latency",
                         valueColumnWidth: 96,
                         emptyTitle: "No transcription timings",
                         emptyIcon: "timer",
                         rows: transcriptionRows
-                    ) { row in
-                        ModelPerformanceDetailRow(row: row)
+                    ) { row, columnWidth in
+                        ModelPerformanceDetailRow(row: row, valueColumnWidth: columnWidth)
                     }
 
-                    ModelInsightDetailSection(
+                    ModelInsightSection(
                         title: "Enhancement Models",
                         valueTitle: "Avg. latency",
                         valueColumnWidth: 96,
                         emptyTitle: "No enhancement timings",
                         emptyIcon: "sparkles",
                         rows: enhancementRows
-                    ) { row in
-                        ModelPerformanceDetailRow(row: row)
+                    ) { row, columnWidth in
+                        ModelPerformanceDetailRow(row: row, valueColumnWidth: columnWidth)
                     }
                 }
                 .padding(.horizontal, 18)
@@ -79,6 +79,7 @@ private struct ModelPerformancePanelContent: View {
 
 private struct ModelPerformanceDetailRow: View {
     let row: ModelPerformanceDetailRowData
+    let valueColumnWidth: CGFloat
 
     var body: some View {
         HStack(alignment: .center, spacing: 10) {
@@ -101,7 +102,7 @@ private struct ModelPerformanceDetailRow: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
-            ModelInsightValueText(text: row.averageLatencyText, width: 96)
+            ModelInsightValueText(text: row.averageLatencyText, width: valueColumnWidth)
         }
         .modelInsightRowStyle()
         .accessibilityElement(children: .combine)

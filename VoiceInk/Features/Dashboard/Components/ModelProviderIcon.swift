@@ -60,11 +60,8 @@ private struct ModelProviderIdentity {
             return identity(for: .nativeApple)
         }
 
-        if trimmedName.localizedCaseInsensitiveContains("whisper")
-            || trimmedName.localizedCaseInsensitiveContains("large")
-            || trimmedName.localizedCaseInsensitiveContains("base")
-            || trimmedName.localizedCaseInsensitiveContains("tiny")
-        {
+        let identifierTokens = trimmedName.lowercased().split { !$0.isLetter && !$0.isNumber }
+        if identifierTokens.contains("whisper") {
             return identity(for: .whisper)
         }
 
@@ -93,13 +90,7 @@ private struct ModelProviderIdentity {
             return identity(for: provider)
         }
 
-        if isSavedOpenRouterModel(trimmedName) {
-            return identity(for: AIProvider.openRouter)
-        }
-
-        if matchingProviders.isEmpty,
-            isOpenRouterModelIdentifier(trimmedName)
-        {
+        if matchingProviders.isEmpty, isSavedOpenRouterModel(trimmedName) {
             return identity(for: AIProvider.openRouter)
         }
 
@@ -235,14 +226,6 @@ private struct ModelProviderIdentity {
         }
 
         return models.contains { namesMatch($0, modelName) }
-    }
-
-    private static func isOpenRouterModelIdentifier(_ modelName: String) -> Bool {
-        let components = modelName.split(separator: "/", omittingEmptySubsequences: false)
-        return components.count == 2
-            && components.allSatisfy {
-                !String($0).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            }
     }
 
     private static func inferredEnhancementProvider(from modelName: String) -> AIProvider? {

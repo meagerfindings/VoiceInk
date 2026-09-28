@@ -2,7 +2,6 @@ import SwiftUI
 
 struct DashboardInsightsView: View {
     @Binding var selectedPeriod: DashboardInsightPeriod
-    let productivityPoints: [DashboardProductivityPoint]
     let dailyActivityPoints: [DashboardProductivityPoint]
     let allTimeDailyActivityPoints: [DashboardProductivityPoint]
     let peakHoursSummary: DashboardPeakHoursSummary
@@ -10,10 +9,7 @@ struct DashboardInsightsView: View {
     let timeSavedSummary: DashboardTimeSavedSummary
     let modelUsage: ModelUsageSummary
     let modelPerformanceSummaries: [ModelPerformanceSummary]
-    let updatedAtText: String
-    let isRefreshingStats: Bool
     let onBack: () -> Void
-    let onRefreshStats: () -> Void
     let onViewModelUsage: () -> Void
     let onViewModelPerformance: () -> Void
 
@@ -23,14 +19,6 @@ struct DashboardInsightsView: View {
 
             DashboardEditorialSummaryCard(
                 summary: timeSavedSummary
-            )
-
-            DashboardProductivityCard(
-                period: selectedPeriod,
-                points: productivityPoints,
-                updatedAtText: updatedAtText,
-                isRefreshingStats: isRefreshingStats,
-                onRefreshStats: onRefreshStats
             )
 
             DashboardActivityCalendarCard(

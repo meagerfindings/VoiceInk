@@ -46,14 +46,20 @@ struct RecommendedModelsFooter: View {
     }
 }
 
-struct ModelInsightDetailSection<Row: Identifiable, RowContent: View>: View {
+enum ModelInsightSectionPresentation: Equatable {
+    case preview
+    case detail
+}
+
+struct ModelInsightSection<Row: Identifiable, RowContent: View>: View {
     let title: LocalizedStringKey
     let valueTitle: LocalizedStringKey
     let valueColumnWidth: CGFloat
     let emptyTitle: LocalizedStringKey
     let emptyIcon: String
     let rows: [Row]
-    private let rowContent: (Row) -> RowContent
+    let presentation: ModelInsightSectionPresentation
+    private let rowContent: (Row, CGFloat) -> RowContent
 
     init(
         title: LocalizedStringKey,
@@ -62,7 +68,8 @@ struct ModelInsightDetailSection<Row: Identifiable, RowContent: View>: View {
         emptyTitle: LocalizedStringKey,
         emptyIcon: String,
         rows: [Row],
-        @ViewBuilder rowContent: @escaping (Row) -> RowContent
+        presentation: ModelInsightSectionPresentation = .detail,
+        @ViewBuilder rowContent: @escaping (Row, CGFloat) -> RowContent
     ) {
         self.title = title
         self.valueTitle = valueTitle
@@ -70,12 +77,24 @@ struct ModelInsightDetailSection<Row: Identifiable, RowContent: View>: View {
         self.emptyTitle = emptyTitle
         self.emptyIcon = emptyIcon
         self.rows = rows
+        self.presentation = presentation
         self.rowContent = rowContent
     }
 
     var body: some View {
+        if presentation == .detail {
+            sectionBody.dashboardInsightCardStyle(padding: 14, alignment: .topLeading)
+        } else {
+            sectionBody.frame(maxWidth: .infinity, alignment: .topLeading)
+        }
+    }
+
+    private var sectionBody: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .center, spacing: 10) {
+            HStack(
+                alignment: presentation == .preview ? .firstTextBaseline : .center,
+                spacing: presentation == .preview ? 8 : 10
+            ) {
                 Text(title)
                     .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -83,12 +102,12 @@ struct ModelInsightDetailSection<Row: Identifiable, RowContent: View>: View {
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(AppTheme.Text.secondary)
                     .lineLimit(1)
-                    .minimumScaleFactor(0.82)
+                    .minimumScaleFactor(presentation == .preview ? 1 : 0.82)
                     .frame(width: valueColumnWidth, alignment: .trailing)
-                    .padding(.trailing, 4)
+                    .padding(.trailing, ModelInsightRowLayout.horizontalPadding)
             }
-            .font(.system(size: 13, weight: .semibold))
-            .foregroundStyle(AppTheme.Text.primary)
+            .font(.system(size: presentation == .preview ? 11 : 13, weight: .semibold))
+            .foregroundStyle(presentation == .preview ? AppTheme.Text.secondary : AppTheme.Text.primary)
             .lineLimit(1)
 
             if rows.isEmpty {
@@ -96,12 +115,11 @@ struct ModelInsightDetailSection<Row: Identifiable, RowContent: View>: View {
             } else {
                 VStack(spacing: 8) {
                     ForEach(rows) { row in
-                        rowContent(row)
+                        rowContent(row, valueColumnWidth)
                     }
                 }
             }
         }
-        .dashboardInsightCardStyle(padding: 14, alignment: .topLeading)
     }
 }
 

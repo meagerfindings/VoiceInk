@@ -24,8 +24,6 @@ struct DashboardActivityCalendarCard: View {
     }
 
     var body: some View {
-        let maximumWords = max(points.lazy.map(\.words).max() ?? 0, 1)
-
         VStack(alignment: .leading, spacing: 22) {
             HStack(alignment: .center, spacing: 10) {
                 Text("Consistency, at a glance")
@@ -49,7 +47,7 @@ struct DashboardActivityCalendarCard: View {
                 .accessibilityHidden(true)
             }
 
-            activityGrid(maximumWords: maximumWords)
+            activityGrid
                 .overlay {
                     GeometryReader { geometry in
                         if let hoveredPoint, let hoverLocation {
@@ -75,7 +73,7 @@ struct DashboardActivityCalendarCard: View {
         .accessibilityElement(children: .contain)
     }
 
-    private func activityGrid(maximumWords: Int) -> some View {
+    private var activityGrid: some View {
         GeometryReader { geometry in
             let gridWidth = max(Self.cellSize, geometry.size.width)
             let visibleWeekCount = max(
@@ -86,6 +84,7 @@ struct DashboardActivityCalendarCard: View {
                 ? (gridWidth - CGFloat(visibleWeekCount) * Self.cellSize) / CGFloat(visibleWeekCount - 1)
                 : Self.cellSpacing
             let cells = calendarCells(weekCount: visibleWeekCount)
+            let maximumWords = max(cells.lazy.filter { !$0.isFuture }.map { $0.point.words }.max() ?? 0, 1)
 
             LazyHGrid(rows: calendarRows, spacing: columnSpacing) {
                 ForEach(cells) { cell in
@@ -110,7 +109,9 @@ struct DashboardActivityCalendarCard: View {
         }
         .frame(height: CGFloat(Self.daysPerWeek) * Self.cellSize + CGFloat(Self.daysPerWeek - 1) * Self.cellSpacing + 4)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("Recent daily dictation activity")
+        .accessibilityLabel(points.contains { $0.words > 0 }
+            ? Text("Recent daily dictation activity")
+            : Text("No activity recorded"))
         .help("Recent activity from your full history. Empty cells indicate days without recorded activity.")
     }
 

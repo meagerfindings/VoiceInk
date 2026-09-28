@@ -63,7 +63,11 @@ struct DashboardEditorialSummaryCard: View {
 
     private var averageSessionText: String {
         guard summary.sessionCount > 0 else { return "--" }
-        return Formatters.formattedCompactNumber(summary.wordCount / summary.sessionCount)
+        let average = Double(summary.wordCount) / Double(summary.sessionCount)
+        if average >= 1000 {
+            return Formatters.formattedCompactNumber(Int(average.rounded()))
+        }
+        return average.formatted(.number.precision(.fractionLength(0...1)))
     }
 
     private func fact(value: String, caption: LocalizedStringKey) -> some View {

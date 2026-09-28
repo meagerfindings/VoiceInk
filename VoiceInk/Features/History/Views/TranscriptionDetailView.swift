@@ -72,10 +72,12 @@ struct TranscriptionDetailView: View {
     }
 
     private var transcriptionContent: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            if transcription.hasEnhancedHistoryText {
+        let enhancementText = transcription.historyEnhancementDetailText
+
+        return VStack(alignment: .leading, spacing: 12) {
+            if let enhancementText {
                 HistoryTranscriptionTextCard(
-                    text: transcription.preferredHistoryText,
+                    text: enhancementText,
                     title: "Enhanced",
                     surface: AppTheme.Surface.control,
                     rendersMarkdown: rendersMarkdown
@@ -84,7 +86,7 @@ struct TranscriptionDetailView: View {
 
             HistoryTranscriptionTextCard(
                 text: transcription.text,
-                title: transcription.hasEnhancedHistoryText ? "Original" : nil,
+                title: enhancementText == nil ? nil : "Original",
                 rendersMarkdown: rendersMarkdown
             )
         }

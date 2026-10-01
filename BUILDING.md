@@ -1,139 +1,92 @@
 # Building VoiceInk
 
-This guide provides detailed instructions for building VoiceInk from source.
+## Requirements
 
-## Prerequisites
+- macOS 15.0 or later
+- Xcode with Command Line Tools
+- Git
 
-Before you begin, ensure you have:
-- macOS 14.4 or later
-- Xcode (latest version recommended)
-- Swift (latest version recommended)
-- Git (for cloning repositories)
+The Refine/MLX dependency also needs Xcode's Metal toolchain. If it is missing, install it with `xcodebuild -downloadComponent MetalToolchain`.
 
-## Quick Start with Makefile (Recommended)
-
-The easiest way to build VoiceInk is using the included Makefile, which automates the entire build process including building and linking the whisper framework.
-
-### Simple Build Commands
+## Local Build
 
 ```bash
-# Clone the repository
-git clone https://github.com/Beingpax/VoiceInk.git
+git clone https://github.com/meagerfindings/VoiceInk.git
 cd VoiceInk
-
-# Build everything (recommended for first-time setup)
-make all
-
-# Or for development (build and run)
-make dev
-```
-
-### Available Makefile Commands
-
-- `make check` or `make healthcheck` - Verify all required tools are installed
-- `make whisper` - Clone and build whisper.cpp XCFramework automatically
-- `make setup` - Prepare the whisper framework for linking
-- `make build` - Build the VoiceInk Xcode project
-- `make local` - Build for local use (no Apple Developer certificate needed)
-- `make run` - Launch the built VoiceInk app
-- `make dev` - Build and run (ideal for development workflow)
-- `make all` - Complete build process (default)
-- `make clean` - Remove build artifacts and dependencies
-- `make help` - Show all available commands
-
-### How the Makefile Helps
-
-The Makefile automatically:
-1. **Manages Dependencies**: Creates a dedicated `~/VoiceInk-Dependencies` directory for all external frameworks
-2. **Builds Whisper Framework**: Clones whisper.cpp and builds the XCFramework with the correct configuration
-3. **Handles Framework Linking**: Sets up the whisper.xcframework in the proper location for Xcode to find
-4. **Verifies Prerequisites**: Checks that git, xcodebuild, and swift are installed before building
-5. **Streamlines Development**: Provides convenient shortcuts for common development tasks
-
-This approach ensures consistent builds across different machines and eliminates manual framework setup errors.
-
----
-
-## Building for Local Use (No Apple Developer Certificate)
-
-If you don't have an Apple Developer certificate, use `make local`:
-
-```bash
-git clone https://github.com/Beingpax/VoiceInk.git
-cd VoiceInk
-make local
+make local-signed
 open ~/Downloads/VoiceInk.app
 ```
 
-This builds VoiceInk with ad-hoc signing using a separate build configuration (`LocalBuild.xcconfig`) that requires no Apple Developer account.
+`make local` prepares `whisper.xcframework` in `~/VoiceInk-Dependencies`, builds Release in `.local-build`, and copies `VoiceInk.app` to `~/Downloads`.
 
-### How It Works
+`make local-signed` uses the same build with this fork's Apple Development identity. An unavailable identity fails the build rather than silently producing an ad-hoc signature. Keep the same identity and Release bundle ID (`com.matgreten.VoiceInk`) to preserve macOS permissions across rebuilds.
 
-The `make local` command uses:
-- `LocalBuild.xcconfig` to override signing and entitlements settings
-- `VoiceInk.local.entitlements` (stripped-down, no CloudKit/keychain groups)
-- `LOCAL_BUILD` Swift compilation flag for conditional code paths
+It uses `LocalBuild.xcconfig`, `VoiceInk.local.entitlements`, and the `LOCAL_BUILD` Swift flag. Without an override, it uses the only available Apple Development identity or falls back to ad-hoc signing when none or multiple are found.
 
-Your normal `make all` / `make build` commands are completely unaffected.
+Choose an identity explicitly:
 
----
-
-## Manual Build Process (Alternative)
-
-If you prefer to build manually or need more control over the build process, follow these steps:
-
-### Building whisper.cpp Framework
-
-1. Clone and build whisper.cpp:
 ```bash
-git clone https://github.com/ggerganov/whisper.cpp.git
-cd whisper.cpp
-./build-xcframework.sh
-```
-This will create the XCFramework at `build-apple/whisper.xcframework`.
-
-### Building VoiceInk
-
-1. Clone the VoiceInk repository:
-```bash
-git clone https://github.com/Beingpax/VoiceInk.git
-cd VoiceInk
+make local LOCAL_CODESIGN_IDENTITY="<SHA or name>"
 ```
 
-2. Add the whisper.xcframework to your project:
-   - Drag and drop `../whisper.cpp/build-apple/whisper.xcframework` into the project navigator, or
-   - Add it manually in the "Frameworks, Libraries, and Embedded Content" section of project settings
+Force ad-hoc signing:
 
-3. Build and Run
-   - Build the project using Cmd+B or Product > Build
-   - Run the project using Cmd+R or Product > Run
+```bash
+make local LOCAL_CODESIGN_IDENTITY=-
+```
 
-## Development Setup
+Local builds do not include iCloud dictionary sync or automatic updates. Ad-hoc builds may require macOS permissions again after rebuilding.
 
-1. **Xcode Configuration**
-   - Ensure you have the latest Xcode version
-   - Install any required Xcode Command Line Tools
+## Updating This Fork
 
-2. **Dependencies**
-   - The project uses [whisper.cpp](https://github.com/ggerganov/whisper.cpp) for transcription
-   - Ensure the whisper.xcframework is properly linked in your Xcode project
-   - Test the whisper.cpp installation independently before proceeding
+The upstream base is tag `v2.21`; this fork corrects its source version metadata to `2.21` / build `221`. Do not use diagnostic prereleases as the normal upgrade target.
 
-3. **Building for Development**
-   - Use the Debug configuration for development
-   - Enable relevant debugging options in Xcode
+Start with a clean working tree, create an upgrade branch, fetch upstream tags, and merge the chosen stable tag. Preserve these fork contracts when resolving conflicts:
 
-4. **Testing**
-   - Run the test suite before making changes
-   - Ensure all tests pass after your modifications
+- Personal signing team, local entitlements, and `LOCAL_BUILD` in both configurations. Debug uses `com.matgreten.VoiceInk.dev`; Release retains `com.matgreten.VoiceInk`.
+- Credentials remain in the existing `com.prakashjoshipax.VoiceInk` Data Protection Keychain service, including its synchronizable query behavior. Do not switch to upstream's `.Local` namespace or plaintext preferences.
+- Automatic update checks stay disabled for local builds. Manual checks remain available, but updates should be installed by rebuilding this fork.
+- New onboarding must preserve legacy/current mode configuration, active mode, and shortcuts so the existing Modes migration can read them.
+- The Refine XPC bundle ID and `Shared/VoiceInkRefineXPCProtocol.swift` service name must agree.
+- Retain upstream's `Package.resolved` revisions for the chosen tag rather than updating dependency branches independently.
+
+Before launching an upgraded app against real data, quit VoiceInk and back up the old app plus:
+
+- `~/Library/Application Support/com.prakashjoshipax.VoiceInk/` (history, dictionary, statistics, recordings, Whisper models)
+- `~/Library/Preferences/com.matgreten.VoiceInk.plist`
+- `~/Library/Application Support/VoiceInk/CustomSounds/`, if present
+
+After building, run `scripts/test-fork-compatibility.sh` on macOS. It tests onboarding with disposable preferences, Keychain behavior with mocked Security calls (never real credentials), and update preferences with and without `LOCAL_BUILD`. It uses the built Sparkle framework from `.local-build/Build/Products/Release`; set `SPARKLE_FRAMEWORK_DIR` when using another derived-data directory.
+
+Check the upgrade using copies of the stores before replacing `/Applications/VoiceInk.app`. A disposable home (`CFFIXED_USER_HOME`) isolates Foundation's store paths, but does **not** reliably isolate the preferences daemon. For app-level previews, copy the built app, give the copy a distinct preview bundle ID, and re-sign it with the same identity; use that distinct preferences domain as well as the disposable home. Never launch the production bundle ID against a test home and assume its preferences are isolated.
+
+Verify history/dictionary migration, the selected transcription model, hotkeys, paste, Refine, restart, and sleep/wake. For rollback after first launch, restore the backed-up data and preferences as well as the old app; replacing only the executable does not undo store migrations.
+
+## Other Commands
+
+- `make check` — verify required tools
+- `make whisper` — prepare `whisper.xcframework`
+- `make build` — build the standard Debug configuration
+- `make dev` — build and launch `VoiceInk Dev.app`
+- `make run` — launch `~/Downloads/VoiceInk.app`, or the first app found in DerivedData
+- `scripts/test-fork-compatibility.sh` — test fork credential, onboarding, and update compatibility
+- `make release` — create the signed release package
+- `make release-setup` — configure release notarization credentials
+- `make clean` — remove `~/VoiceInk-Dependencies`
+- `make help` — list all commands
+
+## Build with Xcode
+
+```bash
+make setup
+open VoiceInk.xcodeproj
+```
+
+Select the `VoiceInk` scheme. Run builds `VoiceInk Dev.app`; Archive uses Release. This fork sets `LOCAL_BUILD` in both configurations, including builds from Xcode.
 
 ## Troubleshooting
 
-If you encounter any build issues:
-1. Clean the build folder (Cmd+Shift+K)
-2. Clean the build cache (Cmd+Shift+K twice)
-3. Check Xcode and macOS versions
-4. Verify all dependencies are properly installed
-5. Make sure whisper.xcframework is properly built and linked
-
-For more help, please check the [issues](https://github.com/Beingpax/VoiceInk/issues) section or create a new issue. 
+- Run `make check` to verify the required tools.
+- Run `make whisper` if the framework is missing.
+- If several Apple Development identities exist, set `LOCAL_CODESIGN_IDENTITY` explicitly.
+- For additional help, open a [GitHub issue](https://github.com/Beingpax/VoiceInk/issues).
